@@ -1,6 +1,6 @@
 'use client';
 import React, { createContext, useContext } from 'react';
-import { createClient } from '@supabase/supabase-client';
+import { createClient } from '@supabase/supabase-js';
 
 // 1. DATABASE CONNECTION
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
