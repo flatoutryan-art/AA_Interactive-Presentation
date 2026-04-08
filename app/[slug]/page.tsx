@@ -4,7 +4,7 @@
  * Apollo Africa — Client Proposal View
  * Route: /[slug]  (app/[slug]/page.tsx)
  *
- * Depth from project root: 2 levels  →  lib is at ../../lib/supabaseClient
+ * Depth from project root: 2 levels  →  lib is at ../../lib/supabaseClient.tsx
  */
 
 import { useEffect, useState } from 'react';
