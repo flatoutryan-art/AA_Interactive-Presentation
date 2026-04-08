@@ -25,6 +25,8 @@ html {
 }
 
 body {
+  @apply bg-charcoal text-white;
+}
   background: var(--apollo-deep);
   color: #F0FFF4;
   -webkit-font-smoothing: antialiased;
