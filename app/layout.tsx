@@ -12,8 +12,8 @@ import {
   supabase,
   MONTH_KEYS,
   MONTH_LABELS,
-} from '../../lib/supabaseClient';
-import type { Proposal } from '../lib/supabaseClient
+} from '../lib/supabaseClient';
+import type { Proposal } from '../lib/supabaseClient';
 import {
   AreaChart,
   Area,
