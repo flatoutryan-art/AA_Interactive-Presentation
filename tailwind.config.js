@@ -2,13 +2,12 @@
 module.exports = {
   content: [
     './app/**/*.{ts,tsx}',
-    './components/**/*.{ts,tsx}',
     './lib/**/*.{ts,tsx}',
+    './components/**/*.{ts,tsx}',
   ],
   theme: {
     extend: {
       colors: {
-        // These now match your APOLLO_THEME exactly
         charcoal: '#0D1B14',
         'deep-forest': '#0F2318',
         forest: '#1A3A28',
@@ -20,8 +19,6 @@ module.exports = {
         white: '#F0FFF4',
         muted: '#86EFAC',
         dim: '#4ADE80',
-        saving: '#10B981',
-        eskom: '#EF4444',
       },
       fontFamily: {
         display: ['"Barlow Condensed"', 'sans-serif'],
