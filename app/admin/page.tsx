@@ -8,8 +8,8 @@
  */
 
 import { useState } from 'react';
-import { supabase, MONTH_KEYS, MONTH_LABELS } from '../lib/supabaseClient';
-import type { Proposal, MonthlyProfile } from '../lib/supabaseClient';
+import { supabase, MONTH_KEYS, MONTH_LABELS } from '../../lib/supabaseClient';
+import type { Proposal, MonthlyProfile } from '../../lib/supabaseClient';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 const ADMIN_PASSWORD =
