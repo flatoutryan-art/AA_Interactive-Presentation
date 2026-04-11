@@ -1,0 +1,1008 @@
+'use client';
+
+/**
+ * app/[slug]/page.tsx — Apollo Africa: Strategic Energy Roadmap
+ * Route: /[slug]  e.g. /steyn-city
+ *
+ * Zero external chart dependencies — all charts are native SVG.
+ * This eliminates all Recharts runtime crashes.
+ */
+
+import { useEffect, useState } from 'react';
+import { supabase, MONTH_KEYS, MONTH_LABELS } from '../../lib/supabaseClient';
+import type { Proposal } from '../../lib/supabaseClient';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+type Term = 5 | 10 | 15 | 20;
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const CARBON_TAX_ZAR        = 80 * 18.5;   // $80/ton × R18.50/$
+const ESKOM_WATER_L_PER_KWH = 1.4;
+const TREES_PER_TON         = 45;
+
+// ─── Safe number helpers ──────────────────────────────────────────────────────
+const safe = (n: unknown): number =>
+  typeof n === 'number' && isFinite(n) ? n : 0;
+
+const fmt = (n: number, dp = 2): string =>
+  safe(n).toLocaleString('en-ZA', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+
+const fmtMill = (n: number): string => `R${fmt(safe(n), 0)}m`;
+
+const fmtDate = (iso: string): string => {
+  try {
+    return new Date(iso).toLocaleDateString('en-ZA', {
+      day: 'numeric', month: 'long', year: 'numeric',
+    });
+  } catch { return iso; }
+};
+
+// ─── Savings trajectory ───────────────────────────────────────────────────────
+type TRow = { year: number; apollo: number; eskom: number; annual: number; cumul: number };
+
+function buildTrajectory(
+  apollo0: number, eskom0: number,
+  mwh: number, mult: number, load: number,
+  cpi: number, esEsc: number, years: number,
+): TRow[] {
+  let a = apollo0 || 1.43;
+  let e = eskom0  || 1.49;
+  let cumul = 0;
+  return Array.from({ length: years }, (_, i) => {
+    const gen  = mwh * mult;
+    const eff  = Math.min(gen, load || gen);
+    const ann  = ((eff * e) - (gen * a)) * 1000 / 1_000_000;
+    cumul += ann;
+    const row: TRow = {
+      year: i + 1,
+      apollo: parseFloat(a.toFixed(4)),
+      eskom:  parseFloat(e.toFixed(4)),
+      annual: parseFloat(ann.toFixed(3)),
+      cumul:  parseFloat(cumul.toFixed(3)),
+    };
+    a *= 1 + cpi   / 100;
+    e *= 1 + esEsc / 100;
+    return row;
+  });
+}
+
+// ─── Zone ────────────────────────────────────────────────────────────────────
+type Zone = { id: 'A'|'B'|'C'; label: string; color: string; cbam: boolean };
+function getZone(mult: number, cov: number): Zone {
+  const eff = (cov || 70) * mult;
+  if (eff >= 90) return { id:'C', label:'Carbon Neutral',  color:'#C9A84C', cbam:true  };
+  if (eff >= 60) return { id:'B', label:'Balanced Growth',  color:'#34D399', cbam:false };
+  return              { id:'A', label:'Maximum Savings',   color:'#10B981', cbam:false };
+}
+
+// ─── Pure SVG chart helpers ───────────────────────────────────────────────────
+// Maps an array of values to SVG polyline points within a viewBox
+function toPoints(vals: number[], w: number, h: number, pad = 8): string {
+  const max = Math.max(...vals, 0.001);
+  return vals
+    .map((v, i) => {
+      const x = pad + (i / (vals.length - 1)) * (w - pad * 2);
+      const y = h - pad - (v / max) * (h - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+}
+
+function toAreaPath(vals: number[], w: number, h: number, pad = 8): string {
+  const max = Math.max(...vals, 0.001);
+  const pts = vals.map((v, i) => {
+    const x = pad + (i / (vals.length - 1)) * (w - pad * 2);
+    const y = h - pad - (v / max) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const first = pts[0].split(',');
+  const last  = pts[pts.length - 1].split(',');
+  return `M${pts.join(' L')} L${last[0]},${h - pad} L${first[0]},${h - pad} Z`;
+}
+
+// ─── SVG Line+Area chart (monthly / day) ─────────────────────────────────────
+function SVGAreaChart({
+  series, labels, height = 180, unitLabel = '',
+}: {
+  series: Array<{ vals: number[]; color: string; label: string; area?: boolean; dashed?: boolean }>;
+  labels: string[];
+  height?: number;
+  unitLabel?: string;
+}) {
+  const W = 340;
+  const H = height;
+  const pad = 10;
+  const allVals = series.flatMap(s => s.vals);
+  const max = Math.max(...allVals, 0.001);
+
+  const toX = (i: number, total: number) =>
+    pad + (i / Math.max(total - 1, 1)) * (W - pad * 2);
+  const toY = (v: number) =>
+    H - pad - (v / max) * (H - pad * 2);
+
+  return (
+    <div className="w-full overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H + 24}`} className="w-full" style={{ minWidth: 280 }}>
+        {/* Grid lines */}
+        {[0.25, 0.5, 0.75, 1].map(f => (
+          <line
+            key={f}
+            x1={pad} y1={toY(max * f)}
+            x2={W - pad} y2={toY(max * f)}
+            stroke="#1E4D30" strokeWidth="0.5" strokeDasharray="3 3"
+          />
+        ))}
+
+        {/* X axis labels */}
+        {labels.map((l, i) => {
+          if (labels.length > 14 && i % 3 !== 0) return null;
+          return (
+            <text
+              key={l}
+              x={toX(i, labels.length)}
+              y={H + 14}
+              textAnchor="middle"
+              fontSize="8"
+              fill="#86EFAC"
+            >{l}</text>
+          );
+        })}
+
+        {/* Series */}
+        {series.map(s => {
+          const pts = s.vals.map((v, i) => ({ x: toX(i, s.vals.length), y: toY(v) }));
+          const lineD = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+          const areaD = lineD + ` L${pts[pts.length-1].x.toFixed(1)},${H-pad} L${pts[0].x.toFixed(1)},${H-pad} Z`;
+          const id = `grad-${s.color.replace('#','')}`;
+          return (
+            <g key={s.label}>
+              {s.area && (
+                <>
+                  <defs>
+                    <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={s.color} stopOpacity="0.35" />
+                      <stop offset="100%" stopColor={s.color} stopOpacity="0.02" />
+                    </linearGradient>
+                  </defs>
+                  <path d={areaD} fill={`url(#${id})`} />
+                </>
+              )}
+              <path
+                d={lineD}
+                fill="none"
+                stroke={s.color}
+                strokeWidth="1.8"
+                strokeDasharray={s.dashed ? '5 3' : undefined}
+              />
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 mt-1 px-2">
+        {series.map(s => (
+          <div key={s.label} className="flex items-center gap-1.5">
+            <span className="w-4 h-0.5 inline-block rounded" style={{ background: s.color }} />
+            <span className="text-[11px] text-muted">{s.label}</span>
+          </div>
+        ))}
+        {unitLabel && <span className="text-[11px] text-border ml-auto">{unitLabel}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─── SVG Bar chart ────────────────────────────────────────────────────────────
+function SVGBarChart({
+  groups, height = 160,
+}: {
+  groups: Array<{ label: string; bars: Array<{ val: number; color: string; name: string }> }>;
+  height?: number;
+}) {
+  const W = 340;
+  const H = height;
+  const pad = 10;
+  const allVals = groups.flatMap(g => g.bars.map(b => b.val));
+  const max = Math.max(...allVals, 0.001);
+  const groupW = (W - pad * 2) / groups.length;
+  const barNames = groups[0]?.bars.map(b => b.name) ?? [];
+
+  return (
+    <div className="w-full overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H + 28}`} className="w-full" style={{ minWidth: 260 }}>
+        {/* Grid */}
+        {[0.25, 0.5, 0.75, 1].map(f => (
+          <line key={f}
+            x1={pad} y1={H - pad - (H - pad*2) * f}
+            x2={W - pad} y2={H - pad - (H - pad*2) * f}
+            stroke="#1E4D30" strokeWidth="0.5" strokeDasharray="3 3"
+          />
+        ))}
+
+        {/* Bars */}
+        {groups.map((g, gi) => {
+          const bw = (groupW - 4) / g.bars.length;
+          return (
+            <g key={g.label}>
+              {g.bars.map((b, bi) => {
+                const bh = (b.val / max) * (H - pad * 2);
+                const x  = pad + gi * groupW + bi * bw + 2;
+                const y  = H - pad - bh;
+                return (
+                  <rect
+                    key={bi}
+                    x={x} y={y}
+                    width={Math.max(bw - 2, 2)}
+                    height={Math.max(bh, 1)}
+                    fill={b.color}
+                    rx="2"
+                    opacity={bi === 1 ? 0.7 : 1}
+                  />
+                );
+              })}
+              <text
+                x={pad + gi * groupW + groupW / 2}
+                y={H + 16}
+                textAnchor="middle"
+                fontSize="9"
+                fill="#86EFAC"
+              >{g.label}</text>
+            </g>
+          );
+        })}
+      </svg>
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 mt-1 px-2">
+        {barNames.map((name, i) => (
+          <div key={name} className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-sm inline-block" style={{ background: groups[0]?.bars[i]?.color }} />
+            <span className="text-[11px] text-muted">{name}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── UI atoms ────────────────────────────────────────────────────────────────
+function Stat({ label, value, sub, accent=false }: {
+  label:string; value:string; sub?:string; accent?:boolean;
+}) {
+  return (
+    <div className={`rounded-2xl border p-4 flex flex-col gap-1 ${
+      accent ? 'bg-green/10 border-green/40' : 'bg-forest border-border'
+    }`}>
+      <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">{label}</p>
+      <p className={`text-xl font-black leading-none ${accent ? 'text-green' : 'text-offwhite'}`}>{value}</p>
+      {sub && <p className="text-[11px] text-dim mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+function SHead({ eye, title }: { eye:string; title:string }) {
+  return (
+    <div className="mb-8">
+      <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-green mb-2">{eye}</p>
+      <h2 className="font-display font-black text-offwhite leading-tight text-3xl md:text-4xl">{title}</h2>
+    </div>
+  );
+}
+
+function Card({ title, children, gold=false }: {
+  title:string; children:React.ReactNode; gold?:boolean;
+}) {
+  return (
+    <div className={`rounded-2xl border p-5 ${
+      gold ? 'bg-gold/5 border-gold/40' : 'bg-forest border-border'
+    }`}>
+      <p className={`text-[11px] font-semibold uppercase tracking-widest mb-4 ${
+        gold ? 'text-gold' : 'text-muted'
+      }`}>{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function HR() {
+  return <div className="border-t border-border" />;
+}
+
+function Logo() {
+  return (
+    <div className="flex items-end gap-2">
+      <svg width="22" height="26" viewBox="0 0 28 32" fill="none" aria-hidden="true">
+        <path d="M14 0L28 28H0L14 0Z" fill="#C9A84C" opacity="0.9"/>
+        <path d="M14 6L24 28H14V6Z" fill="#10B981"/>
+      </svg>
+      <div>
+        <p className="font-display text-xl font-black text-offwhite leading-none">
+          APOLLO <span className="text-green">AFRICA</span>
+        </p>
+        <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-gold">a Reunert company</p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Loading / 404 ────────────────────────────────────────────────────────────
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen bg-charcoal flex items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-10 h-10 rounded-full border-4 border-green/20 border-t-green animate-spin" />
+        <p className="text-sm text-muted">Loading your proposal…</p>
+      </div>
+    </div>
+  );
+}
+
+function NotFoundScreen() {
+  return (
+    <div className="min-h-screen bg-charcoal flex items-center justify-center text-center px-4">
+      <div>
+        <p className="font-display text-8xl font-black text-border">404</p>
+        <p className="text-offwhite text-xl font-bold mt-3">Proposal not found</p>
+        <p className="text-muted text-sm mt-2">Check the URL or contact your Apollo representative.</p>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MAIN
+// ══════════════════════════════════════════════════════════════════════════════
+export default function ProposalPage({ params }: { params: { slug: string } }) {
+  const [proposal,   setProposal]   = useState<Proposal | null>(null);
+  const [loading,    setLoading]    = useState(true);
+  const [notFound,   setNotFound]   = useState(false);
+  const [term,       setTerm]       = useState<Term>(5);
+  // Initialised to null — set to green_coverage_pct/100 once data loads
+  const [multiplier, setMultiplier] = useState<number | null>(null);
+
+  useEffect(() => {
+    supabase
+      .from('proposals')
+      .select('*')
+      .eq('slug', params.slug)
+      .single()
+      .then(({ data, error }) => {
+        if (error || !data) {
+          setNotFound(true);
+        } else {
+          setProposal(data as Proposal);
+          // Default slider = contracted green coverage fraction (e.g. 70% → 0.70)
+          const cov = (data as Proposal).green_coverage_pct;
+          setMultiplier((cov && cov > 0 ? cov : 70) / 100);
+        }
+        setLoading(false);
+      });
+  }, [params.slug]);
+
+  if (loading || multiplier === null) return <LoadingScreen />;
+  if (notFound || !proposal)          return <NotFoundScreen />;
+
+  // ── Safe field reads ──────────────────────────────────────────────────────
+  const p = {
+    mwh:        safe(proposal.contract_mwh),
+    load:       safe(proposal.customer_load_mwh),
+    cov:        safe(proposal.green_coverage_pct) || 70,
+    t5:         safe(proposal.tariff_5yr)  || 1.43,
+    t10:        safe(proposal.tariff_10yr) || 1.41,
+    t15:        safe(proposal.tariff_15yr) || 1.34,
+    eskom:      safe(proposal.eskom_tariff) || 1.49,
+    s5:         safe(proposal.savings_5yr),
+    s10:        safe(proposal.savings_10yr),
+    s15:        safe(proposal.savings_15yr),
+    c5:         safe(proposal.credit_support_5yr),
+    c10:        safe(proposal.credit_support_10yr),
+    c15:        safe(proposal.credit_support_15yr),
+    volGuar:    safe(proposal.volume_guarantee_pct) || 70,
+    cpi:        safe(proposal.escalation_cpi)   || 4.5,
+    esEsc:      safe(proposal.eskom_escalation) || 6.0,
+  };
+
+  // ── Term-derived ─────────────────────────────────────────────────────────
+  const baseTariff  = term===5?p.t5 : term===10?p.t10 : term===15?p.t15 : p.t15*0.97;
+  const baseSavings = term===5?p.s5 : term===10?p.s10 : term===15?p.s15 : p.s15*1.7;
+  const baseCredit  = term===5?p.c5 : term===10?p.c10 : p.c15;
+
+  // ── Multiplier-derived ────────────────────────────────────────────────────
+  const generated   = p.mwh * multiplier;
+  const effective   = Math.min(generated, p.load || generated);
+  const spillMwh    = Math.max(0, generated - (p.load || generated));
+  const spillPct    = generated > 0 ? (spillMwh / generated) * 100 : 0;
+  const ghgAnnual   = generated * 0.94;
+  const coverage    = (p.load > 0) ? (effective / p.load) * 100 : p.cov * multiplier;
+  const adjSavings  = baseSavings * multiplier * (p.mwh > 0 ? effective / p.mwh : 1);
+  const discount    = p.eskom > 0 ? ((p.eskom - baseTariff) / p.eskom) * 100 : 0;
+  const zone        = getZone(multiplier, p.cov);
+
+  // ── Trajectory (compute inline — no useMemo to avoid hook issues) ────────
+  const traj = buildTrajectory(baseTariff, p.eskom, p.mwh, multiplier, p.load, p.cpi, p.esEsc, term);
+
+  // ── Monthly data ─────────────────────────────────────────────────────────
+  const monthlySupply = MONTH_KEYS.map(k =>
+    safe((proposal.monthly_supply as Record<string,number>)[k]) * multiplier
+  );
+  const monthlyLoad = MONTH_KEYS.map(k =>
+    safe((proposal.monthly_load as Record<string,number>)[k])
+  );
+
+  // ── 24h day profile ──────────────────────────────────────────────────────
+  const apolloShape = [0,0,0,0,0,0.05,0.25,0.55,0.80,0.95,1,1,1,0.95,0.85,0.70,0.50,0.30,0.10,0.05,0,0,0,0];
+  const loadShape   = [0.35,0.30,0.28,0.28,0.30,0.38,0.55,0.75,0.85,0.80,0.78,0.75,0.72,0.74,0.76,0.80,0.90,1.0,0.98,0.88,0.72,0.60,0.48,0.40];
+  const apolloPeak  = (p.mwh / 8760) * multiplier * 3.2;
+  const loadPeak    = ((p.load || p.mwh) / 8760) * 2.8;
+  const dayApollo   = apolloShape.map(f => parseFloat((f * apolloPeak).toFixed(3)));
+  const dayLoad     = loadShape.map(f => parseFloat((f * loadPeak).toFixed(3)));
+  const dayLabels   = Array.from({length:24},(_,h)=>`${String(h).padStart(2,'0')}h`);
+
+  // ── Environmental legacy ─────────────────────────────────────────────────
+  const totalKwh   = generated * 1000 * term;
+  const ghgTotal   = ghgAnnual * term;
+  const waterML    = (totalKwh * ESKOM_WATER_L_PER_KWH) / 1_000_000;
+  const trees      = ghgTotal * TREES_PER_TON;
+  const cars       = ghgTotal / 2.1;
+
+  // ── CBAM ─────────────────────────────────────────────────────────────────
+  const avoidedTaxMill = (ghgAnnual * CARBON_TAX_ZAR) / 1_000_000;
+
+  // ── Tariff comparison bars ────────────────────────────────────────────────
+  const tariffGroups = [
+    { label:'5yr',  bars:[{val:p.t5,      color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
+    { label:'10yr', bars:[{val:p.t10,     color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
+    { label:'15yr', bars:[{val:p.t15,     color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
+    { label:'20yr', bars:[{val:p.t15*0.97,color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
+  ];
+
+  // ════════════════════════════════════════════════════════════════════════
+  return (
+    <div className="min-h-screen bg-charcoal text-offwhite font-sans">
+
+      {/* ── HERO ─────────────────────────────────────────────────────────── */}
+      <section className="relative overflow-hidden bg-gradient-to-br from-forest via-charcoal to-charcoal">
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none"
+          style={{
+            backgroundImage:'linear-gradient(#10B981 1px,transparent 1px),linear-gradient(90deg,#10B981 1px,transparent 1px)',
+            backgroundSize:'60px 60px',
+          }} />
+        <div className="relative max-w-4xl mx-auto px-5 pt-12 pb-20">
+          <div className="flex items-center justify-between mb-12">
+            <Logo />
+            <div className="text-right">
+              <p className="text-xs text-muted">Strategic Energy Roadmap</p>
+              {proposal.contract_date && (
+                <p className="text-xs text-dim">{fmtDate(proposal.contract_date)}</p>
+              )}
+            </div>
+          </div>
+
+          <div className="inline-flex items-center gap-2 bg-green/10 border border-green/30 rounded-full px-4 py-1.5 mb-5">
+            <span className="w-1.5 h-1.5 bg-green rounded-full animate-pulse" />
+            <span className="text-green text-[11px] font-bold uppercase tracking-[0.2em]">
+              Securing Renewable Energy Supply
+            </span>
+          </div>
+
+          <h1 className="font-display font-black leading-[0.93] mb-5"
+            style={{ fontSize:'clamp(48px,10vw,88px)' }}>
+            <span className="text-offwhite">Go Greener,</span><br />
+            <span className="text-green">Pay Less.</span>
+          </h1>
+
+          <p className="text-muted text-lg max-w-lg leading-relaxed mb-5">
+            Your tailored clean energy roadmap for{' '}
+            <strong className="text-offwhite">{proposal.client_name}</strong>.
+          </p>
+
+          {proposal.supply_window_closes && (
+            <div className="inline-flex items-center gap-2 bg-gold/10 border border-gold/30 rounded-lg px-4 py-2">
+              <span className="text-gold text-[11px] font-bold uppercase tracking-widest">⚠ Supply Window Closes:</span>
+              <span className="text-gold text-sm font-semibold">{fmtDate(proposal.supply_window_closes)}</span>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ── STICKY TERM BAR ──────────────────────────────────────────────── */}
+      <div className="sticky top-0 z-50 border-b border-border bg-charcoal/95 backdrop-blur-sm">
+        <div className="max-w-4xl mx-auto px-5 py-2.5 flex flex-wrap items-center gap-3">
+          <div className="flex gap-1 bg-forest border border-border rounded-xl p-1">
+            {([5,10,15,20] as Term[]).map(t => (
+              <button key={t} onClick={()=>setTerm(t)}
+                className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
+                  term===t ? 'bg-green text-charcoal' : 'text-muted hover:text-offwhite'
+                }`}>
+                {t}yr
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-bold uppercase tracking-widest"
+            style={{ borderColor:zone.color+'60', background:zone.color+'18', color:zone.color }}>
+            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{background:zone.color}} />
+            Zone {zone.id}: {zone.label}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-4xl mx-auto px-5">
+
+        {/* ── SNAPSHOT ───────────────────────────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="Your Offer at a Glance" title="Commercial Snapshot" />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+            <Stat label="Contracted Supply" value={`${fmt(p.mwh,0)} MWh`}      sub="per year"              accent />
+            <Stat label={`${term}-yr Tariff`} value={`R${fmt(baseTariff)}/kWh`} sub={`${fmt(discount,1)}% below Eskom`} />
+            <Stat label={`${term}-yr Savings`} value={fmtMill(adjSavings)}      sub="cumulative (slider)"   accent />
+            <Stat label="GHG Savings"        value={`${fmt(ghgAnnual,0)} t`}    sub="CO₂e per year" />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat label="Green Coverage"   value={`${fmt(coverage,0)}%`}   sub="effective" />
+            <Stat label="Vol. Guarantee"   value={`${p.volGuar}%`}         sub="contracted" />
+            <Stat label="Spillage"         value={`${fmt(spillPct,1)}%`}   sub={`${fmt(spillMwh,0)} MWh excess`} />
+            <Stat label="Credit Support"   value={`R${fmt(baseCredit,1)}m`} sub="ZAR million" />
+          </div>
+        </section>
+
+        <HR />
+
+        {/* ── GREEN VOLUME SLIDER ────────────────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="Strategic Control" title="Green Volume Optimiser" />
+
+          <div className="bg-forest border border-border rounded-2xl p-5 mb-5">
+            {/* Header row */}
+            <div className="flex items-center justify-between mb-1">
+              <div>
+                <p className="text-muted text-sm font-semibold">Volume Multiplier</p>
+                <p className="text-[11px] text-dim mt-0.5">
+                  Default = contracted green coverage ({p.cov}%). Drag right to model increased volume.
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-bold uppercase tracking-widest px-3 py-1 rounded-full border"
+                  style={{ borderColor:zone.color+'80', background:zone.color+'20', color:zone.color }}>
+                  {multiplier <= p.cov/100 + 0.02
+                    ? `Contracted (${p.cov}%)`
+                    : multiplier < 1.05 ? 'At 100%'
+                    : multiplier < 1.30 ? 'Uplifted'
+                    : multiplier < 1.60 ? 'Carbon-Neutral'
+                    : 'Maximum Green'}
+                </span>
+                <span className="text-offwhite font-mono font-bold">{fmt(multiplier*100,0)}%</span>
+              </div>
+            </div>
+
+            {/* Slider — min anchored to contracted coverage, max 180% */}
+            <div className="relative mt-4 mb-1">
+              <input type="range"
+                min={Math.floor(p.cov * 0.9)}
+                max={180}
+                step={5}
+                value={Math.round(multiplier*100)}
+                onChange={e=>setMultiplier(Number(e.target.value)/100)}
+                className="w-full h-2 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background:`linear-gradient(to right,${zone.color} 0%,${zone.color} ${
+                    ((multiplier*100 - Math.floor(p.cov*0.9)) / (180 - Math.floor(p.cov*0.9))) * 100
+                  }%,#1E4D30 ${
+                    ((multiplier*100 - Math.floor(p.cov*0.9)) / (180 - Math.floor(p.cov*0.9))) * 100
+                  }%,#1E4D30 100%)`,
+                }}
+              />
+              {/* Contracted marker */}
+              <div
+                className="absolute top-3 flex flex-col items-center pointer-events-none"
+                style={{
+                  left: `${((p.cov - Math.floor(p.cov*0.9)) / (180 - Math.floor(p.cov*0.9))) * 100}%`,
+                  transform: 'translateX(-50%)',
+                }}
+              >
+                <div className="w-px h-3 bg-green/60" />
+                <span className="text-[9px] text-green font-bold whitespace-nowrap mt-0.5">
+                  Contracted ({p.cov}%)
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-between text-[10px] font-semibold uppercase tracking-wide mt-5 mb-4">
+              <span className="text-green">Zone A: Max Savings</span>
+              <span className="text-mint">Zone B: Balanced</span>
+              <span className="text-gold">Zone C: CBAM</span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              {([
+                {id:'A',label:'Zone A',title:'Max Savings',   range:'at/below 100%',desc:'Maximum cash flow. Ideal for CFO cost mandates.',         color:'#10B981'},
+                {id:'B',label:'Zone B',title:'Balanced',      range:'100–129%',     desc:'Future-proofed. Balanced cost vs green coverage.',         color:'#34D399'},
+                {id:'C',label:'Zone C ✦',title:'Carbon Neutral',range:'130–180%',   desc:'EU CBAM compliant. Premium green pricing for exports.',    color:'#C9A84C'},
+              ] as const).map(z=>{
+                const active=zone.id===z.id;
+                return (
+                  <div key={z.id} className="rounded-xl border p-3 text-center transition-all duration-300"
+                    style={{ borderColor:active?z.color+'aa':'#1E4D30', background:active?z.color+'18':'#0F2318' }}>
+                    <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5" style={{color:z.color}}>{z.label}</p>
+                    <p className="text-offwhite text-xs font-bold">{z.title}</p>
+                    <p className="text-[10px] mt-0.5" style={{color:z.color}}>{z.range}</p>
+                    <p className="text-muted text-[10px] mt-1 leading-tight hidden sm:block">{z.desc}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-forest border border-border rounded-2xl p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Generated</p>
+              <p className="text-xl font-black text-offwhite">{fmt(generated,0)}</p>
+              <p className="text-xs text-dim">MWh / year</p>
+            </div>
+            <div className="bg-forest border border-border rounded-2xl p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Effective Saving</p>
+              <p className="text-xl font-black text-green">{fmtMill(adjSavings)}</p>
+              <p className="text-xs text-dim">{term}-yr cumulative</p>
+            </div>
+            <div className={`rounded-2xl border p-4 ${spillPct>5?'bg-gold/8 border-gold/40':'bg-forest border-border'}`}>
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Spillage</p>
+              <p className={`text-xl font-black ${spillPct>5?'text-gold':'text-offwhite'}`}>{fmt(spillPct,1)}%</p>
+              <p className="text-xs text-dim">{fmt(spillMwh,0)} MWh excess</p>
+            </div>
+            <div className="bg-forest border border-border rounded-2xl p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">GHG Avoided</p>
+              <p className="text-xl font-black text-mint">{fmt(ghgAnnual,0)}</p>
+              <p className="text-xs text-dim">tCO₂e / year</p>
+            </div>
+          </div>
+        </section>
+
+        <HR />
+
+        {/* ── CBAM ───────────────────────────────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="EU Export & Carbon Strategy" title="CBAM Carbon Tax Analysis" />
+          <div className={`rounded-2xl border p-6 transition-all duration-500 ${
+            zone.cbam ? 'bg-gold/5 border-gold/50' : 'bg-forest border-border'
+          }`}>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted">Carbon &amp; EU CBAM Analysis</p>
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border transition-all duration-500"
+                style={{ borderColor:zone.cbam?'#C9A84C':'#1E4D30', background:zone.cbam?'rgba(201,168,76,0.15)':'rgba(30,77,48,0.5)', color:zone.cbam?'#C9A84C':'#86EFAC' }}>
+                <span className="w-1.5 h-1.5 rounded-full" style={{background:zone.cbam?'#C9A84C':'#86EFAC'}} />
+                {zone.cbam ? 'EU CBAM Compliant ✓' : 'Standard Savings'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-5 mb-4">
+              {[
+                {label:'GHG Avoided / yr',  value:fmt(ghgAnnual,0), unit:'tCO₂e'},
+                {label:'Avoided Carbon Tax', value:fmtMill(avoidedTaxMill), unit:'per year @ $80/ton'},
+                {label:'EU Carbon Price',    value:`R${fmt(CARBON_TAX_ZAR,0)}`, unit:'per ton (R18.50/$)'},
+              ].map(item=>(
+                <div key={item.label}>
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-1">{item.label}</p>
+                  <p className={`text-3xl font-black leading-none ${zone.cbam?'text-gold':'text-green'}`}>{item.value}</p>
+                  <p className="text-xs text-dim mt-0.5">{item.unit}</p>
+                </div>
+              ))}
+            </div>
+            {zone.cbam && (
+              <div className="mt-2 bg-gold/10 border border-gold/30 rounded-xl p-4">
+                <p className="text-gold text-xs font-bold uppercase tracking-widest mb-1.5">✦ EU CBAM Protection Active</p>
+                <p className="text-muted text-xs leading-relaxed">
+                  At 90%+ renewable coverage your business qualifies for EU Carbon Border Adjustment Mechanism compliance —
+                  protecting exports and enabling premium green pricing in European markets.
+                </p>
+              </div>
+            )}
+            <p className="text-border text-[11px] mt-4">Based on EU ETS Q1 2025 forward rate at R18.50/USD. Informational only.</p>
+          </div>
+        </section>
+
+        <HR />
+
+        {/* ── MONTHLY + DAY-IN-LIFE CHARTS ───────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="Your Contracted Supply" title="Monthly Power Forecast" />
+
+          <Card title="Apollo Wheeled Supply vs Electrical Load [MWh / month]">
+            <SVGAreaChart
+              labels={MONTH_LABELS}
+              height={180}
+              series={[
+                { vals:monthlySupply, color:'#10B981', label:'Apollo Wheeled Supply', area:true },
+                { vals:monthlyLoad,   color:'#F0FFF4', label:'Electrical Load',        dashed:true },
+                ...(spillMwh>0 ? [{ vals:monthlySupply.map((s,i)=>Math.max(0,s-monthlyLoad[i])), color:'#C9A84C', label:'Spillage', area:true, dashed:true }] : []),
+              ]}
+            />
+          </Card>
+
+          {/* Monthly table */}
+          <div className="mt-5 overflow-x-auto rounded-2xl border border-border">
+            <table className="w-full border-collapse" style={{fontSize:11}}>
+              <thead>
+                <tr className="border-b border-border bg-forest">
+                  <th className="text-left py-2.5 px-3 text-green font-bold uppercase tracking-widest whitespace-nowrap">Period</th>
+                  {MONTH_LABELS.map(m=>(
+                    <th key={m} className="text-center py-2.5 px-1 text-muted font-semibold">{m}</th>
+                  ))}
+                  <th className="text-center py-2.5 px-3 text-green font-bold">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  {label:'Apollo Supply', vals:monthlySupply, color:'text-green'},
+                  {label:'Elec. Load',    vals:monthlyLoad,   color:'text-offwhite'},
+                ].map(row=>{
+                  const total=row.vals.reduce((a,b)=>a+b,0);
+                  return (
+                    <tr key={row.label} className="border-b border-border/50">
+                      <td className={`py-2 px-3 font-semibold whitespace-nowrap ${row.color}`}>{row.label}</td>
+                      {row.vals.map((v,i)=>(
+                        <td key={i} className="text-center py-2 px-1 text-offwhite">{fmt(v,0)}</td>
+                      ))}
+                      <td className={`text-center py-2 px-3 font-black ${row.color}`}>{fmt(total,0)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Day-in-the-life */}
+          <div className="mt-5">
+            <Card title="Day-in-the-Life Match — 24-Hour Cycle [MW average]">
+              <p className="text-muted text-xs mb-3 -mt-2">
+                Representative daily profile. Move the slider above to see Apollo supply grow relative to your load.
+              </p>
+              <SVGAreaChart
+                labels={dayLabels}
+                height={160}
+                series={[
+                  { vals:dayApollo, color:'#10B981', label:'Apollo Supply (MW)', area:true },
+                  { vals:dayLoad,   color:'#F0FFF4', label:'Eskom Load (MW)',    dashed:true },
+                ]}
+                unitLabel="Indicative shape only"
+              />
+            </Card>
+          </div>
+        </section>
+
+        <HR />
+
+        {/* ── SAVINGS FORECAST ───────────────────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="Your Savings Forecast" title={`${term}-Year Savings Projection`} />
+
+          <div className="grid md:grid-cols-2 gap-5 mb-5">
+            <Card title="Annual Savings [Mill ZAR / year]">
+              <SVGAreaChart
+                labels={traj.map(r=>`Y${r.year}`)}
+                height={160}
+                series={[{ vals:traj.map(r=>r.annual), color:'#10B981', label:'Annual Saving (R mill)', area:true }]}
+              />
+            </Card>
+            <Card title="Cumulative Savings [Mill ZAR]">
+              <SVGAreaChart
+                labels={traj.map(r=>`Y${r.year}`)}
+                height={160}
+                series={[{ vals:traj.map(r=>r.cumul), color:'#34D399', label:'Cumulative (R mill)', area:true }]}
+              />
+            </Card>
+          </div>
+
+          {/* Term picker */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {([5,10,15,20] as Term[]).map(t=>{
+              const raw = t===5?p.s5 : t===10?p.s10 : t===15?p.s15 : p.s15*1.7;
+              const s   = raw * multiplier;
+              const active = term===t;
+              return (
+                <button key={t} onClick={()=>setTerm(t)}
+                  className={`rounded-2xl border p-4 text-center cursor-pointer transition-all w-full ${
+                    active ? 'bg-green/10 border-green' : 'bg-forest border-border hover:border-green/40'
+                  }`}>
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Term</p>
+                  <p className="text-offwhite text-2xl font-black">{t} Year</p>
+                  <p className="text-green text-2xl font-black mt-1">{fmtMill(s)}</p>
+                  <p className="text-dim text-xs mt-1">Cumulative Savings</p>
+                  {t===20 && <span className="inline-block mt-1 text-[10px] font-bold text-gold border border-gold/40 rounded-full px-2 py-0.5">Long Horizon</span>}
+                  {active  && <span className="inline-block mt-1 bg-green text-charcoal text-[11px] font-bold px-2 py-0.5 rounded-full">Selected</span>}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <HR />
+
+        {/* ── TARIFF COMPARISON ──────────────────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="Your TOU Tariffs" title="Apollo vs Eskom Comparison" />
+
+          <div className="grid md:grid-cols-2 gap-5 mb-5">
+            <Card title="Weighted Average Tariff [R/kWh] — All Terms">
+              <SVGBarChart groups={tariffGroups} height={160} />
+            </Card>
+
+            <Card title="Tariff Trajectory — divergence over time">
+              <SVGAreaChart
+                labels={traj.map(r=>`Y${r.year}`)}
+                height={160}
+                series={[
+                  { vals:traj.map(r=>r.apollo), color:'#10B981', label:'Apollo (R/kWh)' },
+                  { vals:traj.map(r=>r.eskom),  color:'#EF4444', label:'Eskom (R/kWh)', dashed:true },
+                ]}
+              />
+              <p className="text-dim text-[11px] mt-2">
+                Apollo at CPI ({p.cpi}% p.a.) vs Eskom at {p.esEsc}% p.a. — gap widens every year.
+              </p>
+            </Card>
+          </div>
+
+          {/* TOU table */}
+          <Card title="Tariff Schedule [R/kWh] — 1 April 2025">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse" style={{fontSize:11}}>
+                <thead>
+                  <tr className="border-b border-border">
+                    {['Period','5yr','10yr','15yr','20yr','Eskom'].map((h,i)=>(
+                      <th key={h} className={`py-2 px-1 text-[11px] font-bold uppercase ${
+                        i===0?'text-left text-dim':i===5?'text-center text-danger':'text-center text-green'
+                      }`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    {label:'Weighted Avg',vals:[p.t5,p.t10,p.t15,p.t15*0.97,p.eskom],bold:true},
+                    {label:'HS — Peak',   vals:[5.20,5.13,4.88,4.74,5.40],bold:false},
+                    {label:'HS — Std',    vals:[1.28,1.26,1.17,1.14,1.35],bold:false},
+                    {label:'HS — Off-Pk',vals:[0.90,0.90,0.90,0.88,0.90],bold:false},
+                    {label:'LS — Peak',   vals:[2.16,2.13,2.03,1.97,2.24],bold:false},
+                    {label:'LS — Std',    vals:[1.20,1.17,1.09,1.06,1.26],bold:false},
+                    {label:'LS — Off-Pk',vals:[0.90,0.90,0.90,0.88,0.90],bold:false},
+                  ].map(row=>(
+                    <tr key={row.label} className={`border-b border-border/40 ${row.bold?'bg-green/5':''}`}>
+                      <td className={`py-2 px-1 text-muted ${row.bold?'font-bold':''}`}>{row.label}</td>
+                      {row.vals.map((v,j)=>(
+                        <td key={j} className={`text-center py-2 px-1 ${j===4?'text-danger':'text-offwhite'} ${row.bold?'font-bold':''}`}>
+                          {fmt(v)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-dim text-[11px] mt-2">Escalate at CPI annually. 20yr rates are indicative.</p>
+          </Card>
+        </section>
+
+        <HR />
+
+        {/* ── ENVIRONMENTAL ──────────────────────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="Environmental Impact" title="Your Green Legacy" />
+
+          <div className="grid md:grid-cols-2 gap-5 mb-5">
+            <div className="bg-forest border border-border rounded-2xl p-6 grid grid-cols-2 gap-6">
+              {[
+                {label:'Annual GHG',    value:fmt(ghgAnnual,0),       unit:'tCO₂e / year',   color:'text-green'},
+                {label:`${term}-yr Total`,value:fmt(ghgTotal,0),      unit:'Total tCO₂e',    color:'text-mint'},
+                {label:'Coverage',      value:`${fmt(coverage,0)}%`,  unit:'of total load',  color:'text-offwhite'},
+                {label:'Energy Source', value:'Wind & Solar',          unit:'100% renewable', color:'text-offwhite'},
+              ].map(item=>(
+                <div key={item.label}>
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">{item.label}</p>
+                  <p className={`font-display text-3xl font-black leading-none ${item.color}`}>{item.value}</p>
+                  <p className="text-dim text-xs mt-1">{item.unit}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-green/10 border border-green/30 rounded-2xl p-6">
+              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-green mb-4">Carbon Commitment</p>
+              <p className="text-offwhite text-base font-semibold leading-snug mb-5">
+                Certifiably reduce your footprint with traceable RECs and GHG reports.
+              </p>
+              <ul className="space-y-2.5">
+                {[
+                  'Certified renewable energy supply',
+                  'Verifiable GHG reduction reporting',
+                  'ESG & TCFD compliance ready',
+                  'NERSA licensed: TRD09/2024',
+                  'EU CBAM-ready documentation',
+                ].map(b=>(
+                  <li key={b} className="flex items-start gap-2">
+                    <span className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full bg-green flex items-center justify-center text-charcoal text-[10px] font-black">✓</span>
+                    <span className="text-muted text-sm">{b}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          {/* Environmental legacy counter */}
+          <div className="bg-forest border border-border rounded-2xl p-6">
+            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-green mb-5">Local Impact — Environmental Legacy</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {[
+                {icon:'💧', label:'Water Saved',   value:fmt(waterML,1), unit:'million litres', note:'vs coal generation'},
+                {icon:'🌳', label:'Tree Equiv.',   value:fmt(trees,0),   unit:'trees planted',  note:'carbon absorption equiv.'},
+                {icon:'🚗', label:'Cars Off Road', value:fmt(cars,0),    unit:'vehicles/year',  note:'tailpipe equivalent'},
+                {icon:'⚡', label:'Clean Energy',  value:fmt(totalKwh/1_000_000,1), unit:'million kWh', note:`over ${term} years`},
+              ].map(item=>(
+                <div key={item.label} className="text-center">
+                  <p className="text-3xl mb-2">{item.icon}</p>
+                  <p className="text-green text-2xl font-black leading-none">{item.value}</p>
+                  <p className="text-offwhite text-xs font-semibold mt-1">{item.unit}</p>
+                  <p className="text-muted text-[11px] mt-0.5">{item.note}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <HR />
+
+        {/* ── NEXT STEPS ─────────────────────────────────────────────────── */}
+        <section className="py-14">
+          <SHead eye="What Happens Next" title="Your Path to Green Energy" />
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            {[
+              {n:'01',title:'Letter of Intent',   body:'Reserve your supply using your meter numbers.',                    c:'#10B981'},
+              {n:'02',title:'Heads of Terms',      body:'Continues reservation of your supply allocation.',                c:'#34D399'},
+              {n:'03',title:'Power Purchase Agmt', body:'CPPA conclusion locks your supply definitively.',                 c:'#6EE7B7'},
+              {n:'04',title:'Update Your ESA',     body:'Update your Electricity Supply Agreement with Eskom.',            c:'#34D399'},
+              {n:'05',title:'Receive Supply',      body:'Green energy wheeled to your business — start saving today.',    c:'#10B981'},
+            ].map(step=>(
+              <div key={step.n} className="bg-forest border border-border rounded-2xl p-4">
+                <p className="font-display text-5xl font-black leading-none mb-2" style={{color:step.c+'22'}}>{step.n}</p>
+                <p className="text-sm font-bold mb-1.5" style={{color:step.c}}>{step.title}</p>
+                <p className="text-muted text-xs leading-relaxed">{step.body}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <HR />
+
+        {/* ── FOOTER ─────────────────────────────────────────────────────── */}
+        <section className="py-14">
+          <div className="grid md:grid-cols-2 gap-8 items-center">
+            <div>
+              <Logo />
+              <p className="text-dim text-[11px] font-bold uppercase tracking-widest mt-4">NERSA Licensed Energy Trader · TRD09/2024</p>
+              <p className="text-dim text-[11px] font-bold uppercase tracking-[0.12em] mt-2">Green Energy · Expertly Sourced · Seamlessly Delivered</p>
+            </div>
+
+            {(proposal.salesperson_name || proposal.salesperson_email) && (
+              <div className="bg-forest border border-border rounded-2xl p-5">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-green mb-3">Your Apollo Contact</p>
+                {proposal.salesperson_name  && <p className="text-offwhite font-bold">{proposal.salesperson_name}</p>}
+                {proposal.salesperson_email && (
+                  <a href={`mailto:${proposal.salesperson_email}`} className="text-green text-sm hover:underline block mt-1">
+                    {proposal.salesperson_email}
+                  </a>
+                )}
+                {proposal.salesperson_phone && <p className="text-muted text-sm mt-1">{proposal.salesperson_phone}</p>}
+                {proposal.salesperson_email && (
+                  <a href={`mailto:${proposal.salesperson_email}?subject=Enquiry — ${encodeURIComponent(proposal.client_name)}`}
+                    className="inline-block mt-4 bg-green hover:bg-mint text-charcoal font-bold px-5 py-2 rounded-lg text-sm transition-colors">
+                    Get in Touch →
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+          <p className="text-border text-[11px] leading-relaxed mt-10">
+            Commercial in confidence. May not be replicated or distributed. Tariffs applicable 1 April 2025 – 31 March 2026.
+            GHG calculations use 0.94 tCO₂e/MWh. Water intensity 1.4 L/kWh (Eskom coal avg).
+            EU CBAM eligibility subject to formal certification. 20-year savings are indicative extrapolations.
+          </p>
+        </section>
+
+      </div>
+    </div>
+  );
+}
