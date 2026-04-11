@@ -2,13 +2,23 @@
 
 /**
  * app/[slug]/ProposalClient.tsx
- * Full interactive proposal view.
- * Receives `slug` as a plain string prop — no params dependency.
+ *
+ * Recharts is loaded via dynamic import with ssr:false — this is the
+ * correct Next.js App Router pattern that prevents the SSR crash while
+ * keeping full hover/touch interactivity on every chart.
  */
 
 import { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { supabase, MONTH_KEYS, MONTH_LABELS } from '../../lib/supabaseClient';
 import type { Proposal } from '../../lib/supabaseClient';
+
+// ─── Dynamic Recharts import — ssr:false prevents the window crash ─────────────
+const Charts = dynamic(() => import('./Charts'), { ssr: false, loading: () => <ChartSkeleton /> });
+
+function ChartSkeleton() {
+  return <div className="w-full rounded-xl bg-elevated/40 animate-pulse" style={{ height: 220 }} />;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Term = 5 | 10 | 15 | 20;
@@ -18,7 +28,7 @@ const CARBON_TAX_ZAR        = 80 * 18.5;
 const ESKOM_WATER_L_PER_KWH = 1.4;
 const TREES_PER_TON         = 45;
 
-// ─── Safe number helpers ──────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 const safe = (n: unknown): number =>
   typeof n === 'number' && isFinite(n) ? n : 0;
 
@@ -36,12 +46,11 @@ const fmtDate = (iso: string): string => {
 };
 
 // ─── Savings trajectory ───────────────────────────────────────────────────────
-type TRow = { year: number; apollo: number; eskom: number; annual: number; cumul: number };
+export type TRow = { year: number; apollo: number; eskom: number; annual: number; cumul: number };
 
-function buildTrajectory(
+export function buildTrajectory(
   apollo0: number, eskom0: number,
-  genMwh: number,
-  load: number,
+  genMwh: number, load: number,
   cpi: number, esEsc: number, years: number,
 ): TRow[] {
   let a = apollo0 || 1.43;
@@ -65,123 +74,11 @@ function buildTrajectory(
 }
 
 // ─── Zone ─────────────────────────────────────────────────────────────────────
-type Zone = { id: 'A'|'B'|'C'; label: string; color: string; cbam: boolean };
-function getZone(pct: number): Zone {
+export type Zone = { id: 'A'|'B'|'C'; label: string; color: string; cbam: boolean };
+export function getZone(pct: number): Zone {
   if (pct >= 130) return { id:'C', label:'Carbon Neutral',  color:'#C9A84C', cbam:true  };
   if (pct >= 100) return { id:'B', label:'Balanced Growth', color:'#34D399', cbam:false };
   return              { id:'A', label:'Maximum Savings',   color:'#10B981', cbam:false };
-}
-
-// ─── SVG chart helpers ────────────────────────────────────────────────────────
-function SVGAreaChart({
-  series, labels, height = 180, unitLabel = '',
-}: {
-  series: Array<{ vals: number[]; color: string; label: string; area?: boolean; dashed?: boolean }>;
-  labels: string[];
-  height?: number;
-  unitLabel?: string;
-}) {
-  const W = 340; const H = height; const pad = 10;
-  const allVals = series.flatMap(s => s.vals);
-  const max = Math.max(...allVals, 0.001);
-  const toX = (i: number, total: number) => pad + (i / Math.max(total - 1, 1)) * (W - pad * 2);
-  const toY = (v: number) => H - pad - (v / max) * (H - pad * 2);
-
-  return (
-    <div className="w-full overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H + 24}`} className="w-full" style={{ minWidth: 260 }}>
-        {[0.25, 0.5, 0.75, 1].map(f => (
-          <line key={f} x1={pad} y1={toY(max*f)} x2={W-pad} y2={toY(max*f)}
-            stroke="#1E4D30" strokeWidth="0.5" strokeDasharray="3 3" />
-        ))}
-        {labels.map((l, i) => {
-          if (labels.length > 14 && i % 3 !== 0) return null;
-          return (
-            <text key={l} x={toX(i, labels.length)} y={H+14}
-              textAnchor="middle" fontSize="8" fill="#86EFAC">{l}</text>
-          );
-        })}
-        {series.map(s => {
-          const pts = s.vals.map((v, i) => ({ x: toX(i, s.vals.length), y: toY(v) }));
-          const lineD = pts.map((p, i) => `${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-          const areaD = lineD + ` L${pts[pts.length-1].x.toFixed(1)},${H-pad} L${pts[0].x.toFixed(1)},${H-pad} Z`;
-          const id = `g${s.color.replace('#','')}`;
-          return (
-            <g key={s.label}>
-              {s.area && (
-                <>
-                  <defs>
-                    <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={s.color} stopOpacity="0.35" />
-                      <stop offset="100%" stopColor={s.color} stopOpacity="0.02" />
-                    </linearGradient>
-                  </defs>
-                  <path d={areaD} fill={`url(#${id})`} />
-                </>
-              )}
-              <path d={lineD} fill="none" stroke={s.color} strokeWidth="1.8"
-                strokeDasharray={s.dashed ? '5 3' : undefined} />
-            </g>
-          );
-        })}
-      </svg>
-      <div className="flex flex-wrap gap-4 mt-1 px-2">
-        {series.map(s => (
-          <div key={s.label} className="flex items-center gap-1.5">
-            <span className="w-4 h-0.5 inline-block rounded" style={{ background: s.color }} />
-            <span className="text-[11px] text-muted">{s.label}</span>
-          </div>
-        ))}
-        {unitLabel && <span className="text-[11px] text-border ml-auto">{unitLabel}</span>}
-      </div>
-    </div>
-  );
-}
-
-function SVGBarChart({ groups, height = 160 }: {
-  groups: Array<{ label: string; bars: Array<{ val: number; color: string; name: string }> }>;
-  height?: number;
-}) {
-  const W = 340; const H = height; const pad = 10;
-  const allVals = groups.flatMap(g => g.bars.map(b => b.val));
-  const max = Math.max(...allVals, 0.001);
-  const groupW = (W - pad * 2) / groups.length;
-  const barNames = groups[0]?.bars.map(b => b.name) ?? [];
-
-  return (
-    <div className="w-full overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H + 28}`} className="w-full" style={{ minWidth: 240 }}>
-        {[0.25, 0.5, 0.75, 1].map(f => (
-          <line key={f} x1={pad} y1={H-pad-(H-pad*2)*f} x2={W-pad} y2={H-pad-(H-pad*2)*f}
-            stroke="#1E4D30" strokeWidth="0.5" strokeDasharray="3 3" />
-        ))}
-        {groups.map((g, gi) => {
-          const bw = (groupW - 4) / g.bars.length;
-          return (
-            <g key={g.label}>
-              {g.bars.map((b, bi) => {
-                const bh = (b.val / max) * (H - pad * 2);
-                const x  = pad + gi * groupW + bi * bw + 2;
-                const y  = H - pad - bh;
-                return <rect key={bi} x={x} y={y} width={Math.max(bw-2,2)}
-                  height={Math.max(bh,1)} fill={b.color} rx="2" opacity={bi===1?0.7:1} />;
-              })}
-              <text x={pad+gi*groupW+groupW/2} y={H+16}
-                textAnchor="middle" fontSize="9" fill="#86EFAC">{g.label}</text>
-            </g>
-          );
-        })}
-      </svg>
-      <div className="flex flex-wrap gap-4 mt-1 px-2">
-        {barNames.map((name, i) => (
-          <div key={name} className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-sm inline-block" style={{ background: groups[0]?.bars[i]?.color }} />
-            <span className="text-[11px] text-muted">{name}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
 }
 
 // ─── UI atoms ─────────────────────────────────────────────────────────────────
@@ -231,7 +128,9 @@ function Logo() {
         <path d="M14 6L24 28H14V6Z" fill="#10B981"/>
       </svg>
       <div>
-        <p className="font-display text-xl font-black text-offwhite leading-none">APOLLO <span className="text-green">AFRICA</span></p>
+        <p className="font-display text-xl font-black text-offwhite leading-none">
+          APOLLO <span className="text-green">AFRICA</span>
+        </p>
         <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-gold">a Reunert company</p>
       </div>
     </div>
@@ -262,7 +161,7 @@ function NotFoundScreen() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// MAIN CLIENT COMPONENT — receives slug as a plain prop
+// MAIN CLIENT COMPONENT
 // ══════════════════════════════════════════════════════════════════════════════
 export default function ProposalClient({ slug }: { slug: string }) {
   const [proposal,    setProposal]    = useState<Proposal | null>(null);
@@ -292,7 +191,7 @@ export default function ProposalClient({ slug }: { slug: string }) {
   if (loading || coveragePct === null) return <LoadingScreen />;
   if (notFound || !proposal)           return <NotFoundScreen />;
 
-  // ── Safe field reads ──────────────────────────────────────────────────────
+  // ── Safe reads ────────────────────────────────────────────────────────────
   const p = {
     mwh:        safe(proposal.contract_mwh),
     load:       safe(proposal.customer_load_mwh),
@@ -328,38 +227,46 @@ export default function ProposalClient({ slug }: { slug: string }) {
   const discount   = p.eskom > 0 ? ((p.eskom - baseTariff) / p.eskom) * 100 : 0;
   const zone       = getZone(coveragePct);
 
-  // ── Trajectory ────────────────────────────────────────────────────────────
+  // ── Chart data ────────────────────────────────────────────────────────────
   const traj = buildTrajectory(baseTariff, p.eskom, generated, p.load, p.cpi, p.esEsc, term);
 
-  // ── Monthly data ──────────────────────────────────────────────────────────
   const covScale      = p.defaultCov > 0 ? coveragePct / p.defaultCov : 1;
   const monthlySupply = MONTH_KEYS.map(k => safe((proposal.monthly_supply as Record<string,number>)[k]) * covScale);
   const monthlyLoad   = MONTH_KEYS.map(k => safe((proposal.monthly_load   as Record<string,number>)[k]));
 
-  // ── 24h day profile ───────────────────────────────────────────────────────
+  const monthlyChartData = MONTH_LABELS.map((month, i) => ({
+    month,
+    supply: parseFloat(monthlySupply[i].toFixed(0)),
+    load:   parseFloat(monthlyLoad[i].toFixed(0)),
+    spill:  parseFloat(Math.max(0, monthlySupply[i] - monthlyLoad[i]).toFixed(0)),
+  }));
+
+  // 24h day profile
   const apolloShape = [0,0,0,0,0,0.05,0.25,0.55,0.80,0.95,1,1,1,0.95,0.85,0.70,0.50,0.30,0.10,0.05,0,0,0,0];
   const loadShape   = [0.35,0.30,0.28,0.28,0.30,0.38,0.55,0.75,0.85,0.80,0.78,0.75,0.72,0.74,0.76,0.80,0.90,1.0,0.98,0.88,0.72,0.60,0.48,0.40];
   const apolloPeak  = (generated / 8760) * 3.2;
   const loadPeak    = ((p.load || generated) / 8760) * 2.8;
-  const dayApollo   = apolloShape.map(f => parseFloat((f * apolloPeak).toFixed(3)));
-  const dayLoad     = loadShape.map(f => parseFloat((f * loadPeak).toFixed(3)));
-  const dayLabels   = Array.from({length:24},(_,h)=>`${String(h).padStart(2,'0')}h`);
+  const dayChartData = Array.from({ length: 24 }, (_, h) => ({
+    hour:   `${String(h).padStart(2,'0')}:00`,
+    apollo: parseFloat((apolloShape[h] * apolloPeak).toFixed(3)),
+    load:   parseFloat((loadShape[h]   * loadPeak).toFixed(3)),
+    spill:  parseFloat((Math.max(0, apolloShape[h]*apolloPeak - loadShape[h]*loadPeak)).toFixed(3)),
+  }));
 
-  // ── Environmental legacy ──────────────────────────────────────────────────
+  const tariffBars = [
+    { term:'5yr',  apollo:p.t5,        eskom:p.eskom },
+    { term:'10yr', apollo:p.t10,       eskom:p.eskom },
+    { term:'15yr', apollo:p.t15,       eskom:p.eskom },
+    { term:'20yr', apollo:p.t15*0.97,  eskom:p.eskom },
+  ];
+
+  // Environmental legacy
   const totalKwh       = generated * 1000 * term;
   const ghgTotal       = ghgAnnual * term;
   const waterML        = (totalKwh * ESKOM_WATER_L_PER_KWH) / 1_000_000;
   const trees          = ghgTotal * TREES_PER_TON;
   const cars           = ghgTotal / 2.1;
   const avoidedTaxMill = (ghgAnnual * CARBON_TAX_ZAR) / 1_000_000;
-
-  // ── Tariff bars ───────────────────────────────────────────────────────────
-  const tariffGroups = [
-    { label:'5yr',  bars:[{val:p.t5,       color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
-    { label:'10yr', bars:[{val:p.t10,      color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
-    { label:'15yr', bars:[{val:p.t15,      color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
-    { label:'20yr', bars:[{val:p.t15*0.97, color:'#10B981',name:'Apollo'},{val:p.eskom,color:'#EF4444',name:'Eskom'}] },
-  ];
 
   // ════════════════════════════════════════════════════════════════════════════
   return (
@@ -402,8 +309,10 @@ export default function ProposalClient({ slug }: { slug: string }) {
         <div className="max-w-4xl mx-auto px-5 py-2.5 flex flex-wrap items-center gap-3">
           <div className="flex gap-1 bg-forest border border-border rounded-xl p-1">
             {([5,10,15,20] as Term[]).map(t => (
-              <button key={t} onClick={()=>setTerm(t)}
-                className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${term===t?'bg-green text-charcoal':'text-muted hover:text-offwhite'}`}>
+              <button key={t} onClick={() => setTerm(t)}
+                className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
+                  term===t ? 'bg-green text-charcoal' : 'text-muted hover:text-offwhite'
+                }`}>
                 {t}yr
               </button>
             ))}
@@ -422,17 +331,17 @@ export default function ProposalClient({ slug }: { slug: string }) {
         <section className="py-14">
           <SHead eye="Your Offer at a Glance" title="Commercial Snapshot" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <Stat label="Contracted Supply"   value={`${fmt(p.mwh,0)} MWh`}      sub="base contracted"           accent />
-            <Stat label={`${term}-yr Tariff`} value={`R${fmt(baseTariff)}/kWh`}   sub={`${fmt(discount,1)}% below Eskom`} />
-            <Stat label={`${term}-yr Savings`} value={fmtMill(adjSavings)}        sub="at selected coverage"      accent />
-            <Stat label="GHG Savings"         value={`${fmt(ghgAnnual,0)} t`}     sub="CO₂e per year" />
+            <Stat label="Contracted Supply"   value={`${fmt(p.mwh,0)} MWh`}     sub="base contracted"         accent />
+            <Stat label={`${term}-yr Tariff`} value={`R${fmt(baseTariff)}/kWh`}  sub={`${fmt(discount,1)}% below Eskom`} />
+            <Stat label={`${term}-yr Savings`} value={fmtMill(adjSavings)}       sub="at selected coverage"    accent />
+            <Stat label="GHG Savings"         value={`${fmt(ghgAnnual,0)} t`}    sub="CO₂e per year" />
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="Green Coverage"    value={`${coveragePct}%`}
+            <Stat label="Green Coverage"  value={`${coveragePct}%`}
               sub={coveragePct===p.defaultCov?'contracted default':coveragePct<p.defaultCov?'below contracted':'above contracted'} />
-            <Stat label="Vol. Guarantee"    value={`${p.volGuar}%`}              sub="contracted" />
-            <Stat label="Spillage"          value={`${fmt(spillPct,1)}%`}        sub={`${fmt(spillMwh,0)} MWh excess`} />
-            <Stat label="Credit Support"    value={`R${fmt(baseCredit,1)}m`}     sub="ZAR million" />
+            <Stat label="Vol. Guarantee"  value={`${p.volGuar}%`}             sub="contracted" />
+            <Stat label="Spillage"        value={`${fmt(spillPct,1)}%`}       sub={`${fmt(spillMwh,0)} MWh excess`} />
+            <Stat label="Credit Support"  value={`R${fmt(baseCredit,1)}m`}    sub="ZAR million" />
           </div>
         </section>
 
@@ -447,7 +356,7 @@ export default function ProposalClient({ slug }: { slug: string }) {
               <div>
                 <p className="text-muted text-sm font-semibold">Green Coverage %</p>
                 <p className="text-[11px] text-dim mt-0.5">
-                  Default = contracted coverage ({p.defaultCov}%). Matches the Green Coverage card above exactly.
+                  Default = contracted coverage ({p.defaultCov}%). Matches the Green Coverage card exactly.
                 </p>
               </div>
               <div className="flex items-center gap-3">
@@ -565,151 +474,22 @@ export default function ProposalClient({ slug }: { slug: string }) {
 
         <HR />
 
-        {/* ── MONTHLY + DAY-IN-LIFE ───────────────────────────────────────── */}
-        <section className="py-14">
-          <SHead eye="Your Contracted Supply" title="Monthly Power Forecast" />
-          <Card title="Apollo Wheeled Supply vs Electrical Load [MWh / month]">
-            <SVGAreaChart labels={MONTH_LABELS} height={180}
-              series={[
-                { vals:monthlySupply, color:'#10B981', label:'Apollo Wheeled Supply', area:true },
-                { vals:monthlyLoad,   color:'#F0FFF4', label:'Electrical Load',        dashed:true },
-                ...(spillMwh>0?[{ vals:monthlySupply.map((s,i)=>Math.max(0,s-monthlyLoad[i])), color:'#C9A84C', label:'Spillage', area:true, dashed:true }]:[]),
-              ]}
-            />
-          </Card>
-
-          {/* Monthly table */}
-          <div className="mt-5 overflow-x-auto rounded-2xl border border-border">
-            <table className="w-full border-collapse" style={{fontSize:11}}>
-              <thead>
-                <tr className="border-b border-border bg-forest">
-                  <th className="text-left py-2.5 px-3 text-green font-bold uppercase tracking-widest whitespace-nowrap">Period</th>
-                  {MONTH_LABELS.map(m=><th key={m} className="text-center py-2.5 px-1 text-muted font-semibold">{m}</th>)}
-                  <th className="text-center py-2.5 px-3 text-green font-bold">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {([
-                  {label:'Apollo Supply',vals:monthlySupply,color:'text-green'},
-                  {label:'Elec. Load',   vals:monthlyLoad,  color:'text-offwhite'},
-                ]).map(row=>{
-                  const total=row.vals.reduce((a,b)=>a+b,0);
-                  return (
-                    <tr key={row.label} className="border-b border-border/50">
-                      <td className={`py-2 px-3 font-semibold whitespace-nowrap ${row.color}`}>{row.label}</td>
-                      {row.vals.map((v,i)=><td key={i} className="text-center py-2 px-1 text-offwhite">{fmt(v,0)}</td>)}
-                      <td className={`text-center py-2 px-3 font-black ${row.color}`}>{fmt(total,0)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Day-in-life */}
-          <div className="mt-5">
-            <Card title="Day-in-the-Life Match — 24-Hour Cycle [MW average]">
-              <p className="text-muted text-xs mb-3 -mt-2">Representative daily profile. Coverage slider adjusts Apollo supply curve.</p>
-              <SVGAreaChart labels={dayLabels} height={160}
-                series={[
-                  { vals:dayApollo, color:'#10B981', label:'Apollo Supply (MW)', area:true },
-                  { vals:dayLoad,   color:'#F0FFF4', label:'Eskom Load (MW)',    dashed:true },
-                ]}
-                unitLabel="Indicative shape only"
-              />
-            </Card>
-          </div>
-        </section>
-
-        <HR />
-
-        {/* ── SAVINGS FORECAST ───────────────────────────────────────────── */}
-        <section className="py-14">
-          <SHead eye="Your Savings Forecast" title={`${term}-Year Savings Projection`} />
-          <div className="grid md:grid-cols-2 gap-5 mb-5">
-            <Card title="Annual Savings [Mill ZAR / year]">
-              <SVGAreaChart labels={traj.map(r=>`Y${r.year}`)} height={160}
-                series={[{ vals:traj.map(r=>Math.max(r.annual,0)), color:'#10B981', label:'Annual Saving (R mill)', area:true }]} />
-            </Card>
-            <Card title="Cumulative Savings [Mill ZAR]">
-              <SVGAreaChart labels={traj.map(r=>`Y${r.year}`)} height={160}
-                series={[{ vals:traj.map(r=>r.cumul), color:'#34D399', label:'Cumulative (R mill)', area:true }]} />
-            </Card>
-          </div>
-
-          {/* Term picker */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {([5,10,15,20] as Term[]).map(t=>{
-              const raw = t===5?p.s5 : t===10?p.s10 : t===15?p.s15 : p.s15*1.7;
-              const s   = raw * (coveragePct / p.defaultCov);
-              const active = term===t;
-              return (
-                <button key={t} onClick={()=>setTerm(t)}
-                  className={`rounded-2xl border p-4 text-center cursor-pointer transition-all w-full ${active?'bg-green/10 border-green':'bg-forest border-border hover:border-green/40'}`}>
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Term</p>
-                  <p className="text-offwhite text-2xl font-black">{t} Year</p>
-                  <p className="text-green text-2xl font-black mt-1">{fmtMill(s)}</p>
-                  <p className="text-dim text-xs mt-1">Cumulative Savings</p>
-                  {t===20 && <span className="inline-block mt-1 text-[10px] font-bold text-gold border border-gold/40 rounded-full px-2 py-0.5">Long Horizon</span>}
-                  {active  && <span className="inline-block mt-1 bg-green text-charcoal text-[11px] font-bold px-2 py-0.5 rounded-full">Selected</span>}
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <HR />
-
-        {/* ── TARIFF COMPARISON ──────────────────────────────────────────── */}
-        <section className="py-14">
-          <SHead eye="Your TOU Tariffs" title="Apollo vs Eskom Comparison" />
-          <div className="grid md:grid-cols-2 gap-5 mb-5">
-            <Card title="Weighted Average Tariff [R/kWh] — All Terms">
-              <SVGBarChart groups={tariffGroups} height={160} />
-            </Card>
-            <Card title="Tariff Trajectory — divergence over time">
-              <SVGAreaChart labels={traj.map(r=>`Y${r.year}`)} height={160}
-                series={[
-                  { vals:traj.map(r=>r.apollo), color:'#10B981', label:'Apollo (R/kWh)' },
-                  { vals:traj.map(r=>r.eskom),  color:'#EF4444', label:'Eskom (R/kWh)', dashed:true },
-                ]}
-              />
-              <p className="text-dim text-[11px] mt-2">Apollo at CPI ({p.cpi}% p.a.) vs Eskom at {p.esEsc}% p.a. — gap widens every year.</p>
-            </Card>
-          </div>
-          <Card title="Tariff Schedule [R/kWh] — 1 April 2025">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse" style={{fontSize:11}}>
-                <thead>
-                  <tr className="border-b border-border">
-                    {['Period','5yr','10yr','15yr','20yr','Eskom'].map((h,i)=>(
-                      <th key={h} className={`py-2 px-1 text-[11px] font-bold uppercase ${i===0?'text-left text-dim':i===5?'text-center text-danger':'text-center text-green'}`}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    {label:'Weighted Avg',vals:[p.t5,p.t10,p.t15,p.t15*0.97,p.eskom],bold:true},
-                    {label:'HS — Peak',   vals:[5.20,5.13,4.88,4.74,5.40],bold:false},
-                    {label:'HS — Std',    vals:[1.28,1.26,1.17,1.14,1.35],bold:false},
-                    {label:'HS — Off-Pk',vals:[0.90,0.90,0.90,0.88,0.90],bold:false},
-                    {label:'LS — Peak',   vals:[2.16,2.13,2.03,1.97,2.24],bold:false},
-                    {label:'LS — Std',    vals:[1.20,1.17,1.09,1.06,1.26],bold:false},
-                    {label:'LS — Off-Pk',vals:[0.90,0.90,0.90,0.88,0.90],bold:false},
-                  ].map(row=>(
-                    <tr key={row.label} className={`border-b border-border/40 ${row.bold?'bg-green/5':''}`}>
-                      <td className={`py-2 px-1 text-muted ${row.bold?'font-bold':''}`}>{row.label}</td>
-                      {row.vals.map((v,j)=>(
-                        <td key={j} className={`text-center py-2 px-1 ${j===4?'text-danger':'text-offwhite'} ${row.bold?'font-bold':''}`}>{fmt(v)}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="text-dim text-[11px] mt-2">Escalate at CPI annually. 20yr rates are indicative.</p>
-          </Card>
-        </section>
+        {/* ── ALL INTERACTIVE CHARTS via dynamic Recharts ────────────────── */}
+        <Charts
+          term={term}
+          coveragePct={coveragePct}
+          defaultCov={p.defaultCov}
+          monthlyChartData={monthlyChartData}
+          dayChartData={dayChartData}
+          traj={traj}
+          tariffBars={tariffBars}
+          cpi={p.cpi}
+          esEsc={p.esEsc}
+          spillMwh={spillMwh}
+          onTermChange={setTerm}
+          savings={{ s5: p.s5, s10: p.s10, s15: p.s15 }}
+          tariffs={{ t5: p.t5, t10: p.t10, t15: p.t15, eskom: p.eskom }}
+        />
 
         <HR />
 
@@ -719,10 +499,10 @@ export default function ProposalClient({ slug }: { slug: string }) {
           <div className="grid md:grid-cols-2 gap-5 mb-5">
             <div className="bg-forest border border-border rounded-2xl p-6 grid grid-cols-2 gap-6">
               {[
-                {label:'Annual GHG',    value:fmt(ghgAnnual,0),       unit:'tCO₂e / year',   color:'text-green'},
+                {label:'Annual GHG',     value:fmt(ghgAnnual,0),      unit:'tCO₂e / year',   color:'text-green'},
                 {label:`${term}-yr Total`,value:fmt(ghgTotal,0),      unit:'Total tCO₂e',    color:'text-mint'},
-                {label:'Coverage',      value:`${coveragePct}%`,      unit:'of total load',  color:'text-offwhite'},
-                {label:'Energy Source', value:'Wind & Solar',          unit:'100% renewable', color:'text-offwhite'},
+                {label:'Coverage',       value:`${coveragePct}%`,     unit:'of total load',  color:'text-offwhite'},
+                {label:'Energy Source',  value:'Wind & Solar',         unit:'100% renewable', color:'text-offwhite'},
               ].map(item=>(
                 <div key={item.label}>
                   <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">{item.label}</p>
@@ -747,15 +527,14 @@ export default function ProposalClient({ slug }: { slug: string }) {
             </div>
           </div>
 
-          {/* Environmental legacy */}
           <div className="bg-forest border border-border rounded-2xl p-6">
             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-green mb-5">Local Impact — Environmental Legacy</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
-                {icon:'💧',label:'Water Saved',  value:fmt(waterML,1),              unit:'million litres',note:'vs coal generation'},
-                {icon:'🌳',label:'Tree Equiv.',  value:fmt(trees,0),                unit:'trees planted', note:'carbon absorption equiv.'},
-                {icon:'🚗',label:'Cars Off Road',value:fmt(cars,0),                 unit:'vehicles/year', note:'tailpipe equivalent'},
-                {icon:'⚡',label:'Clean Energy', value:fmt(totalKwh/1_000_000,1),  unit:'million kWh',   note:`over ${term} years`},
+                {icon:'💧',label:'Water Saved',  value:fmt(waterML,1),             unit:'million litres', note:'vs coal generation'},
+                {icon:'🌳',label:'Tree Equiv.',  value:fmt(trees,0),               unit:'trees planted',  note:'carbon absorption equiv.'},
+                {icon:'🚗',label:'Cars Off Road',value:fmt(cars,0),                unit:'vehicles/year',  note:'tailpipe equivalent'},
+                {icon:'⚡',label:'Clean Energy', value:fmt(totalKwh/1_000_000,1),  unit:'million kWh',    note:`over ${term} years`},
               ].map(item=>(
                 <div key={item.label} className="text-center">
                   <p className="text-3xl mb-2">{item.icon}</p>
@@ -775,11 +554,11 @@ export default function ProposalClient({ slug }: { slug: string }) {
           <SHead eye="What Happens Next" title="Your Path to Green Energy" />
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {[
-              {n:'01',title:'Letter of Intent',   body:'Reserve your supply using your meter numbers.',                    c:'#10B981'},
-              {n:'02',title:'Heads of Terms',      body:'Continues reservation of your supply allocation.',                c:'#34D399'},
-              {n:'03',title:'Power Purchase Agmt', body:'CPPA conclusion locks your supply definitively.',                 c:'#6EE7B7'},
-              {n:'04',title:'Update Your ESA',     body:'Update your Electricity Supply Agreement with Eskom.',            c:'#34D399'},
-              {n:'05',title:'Receive Supply',      body:'Green energy wheeled to your business — start saving today.',    c:'#10B981'},
+              {n:'01',title:'Letter of Intent',   body:'Reserve your supply using your meter numbers.',                 c:'#10B981'},
+              {n:'02',title:'Heads of Terms',      body:'Continues reservation of your supply allocation.',             c:'#34D399'},
+              {n:'03',title:'Power Purchase Agmt', body:'CPPA conclusion locks your supply definitively.',              c:'#6EE7B7'},
+              {n:'04',title:'Update Your ESA',     body:'Update your Electricity Supply Agreement with Eskom.',         c:'#34D399'},
+              {n:'05',title:'Receive Supply',      body:'Green energy wheeled to your business — start saving today.', c:'#10B981'},
             ].map(step=>(
               <div key={step.n} className="bg-forest border border-border rounded-2xl p-4">
                 <p className="font-display text-5xl font-black leading-none mb-2" style={{color:step.c+'22'}}>{step.n}</p>
@@ -805,7 +584,9 @@ export default function ProposalClient({ slug }: { slug: string }) {
                 <p className="text-[11px] font-bold uppercase tracking-widest text-green mb-3">Your Apollo Contact</p>
                 {proposal.salesperson_name  && <p className="text-offwhite font-bold">{proposal.salesperson_name}</p>}
                 {proposal.salesperson_email && (
-                  <a href={`mailto:${proposal.salesperson_email}`} className="text-green text-sm hover:underline block mt-1">{proposal.salesperson_email}</a>
+                  <a href={`mailto:${proposal.salesperson_email}`} className="text-green text-sm hover:underline block mt-1">
+                    {proposal.salesperson_email}
+                  </a>
                 )}
                 {proposal.salesperson_phone && <p className="text-muted text-sm mt-1">{proposal.salesperson_phone}</p>}
                 {proposal.salesperson_email && (
