@@ -1,8 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // App Router is the default in Next 14
   images: {
+    // Allow local public images and Supabase storage
     domains: ['your-supabase-project.supabase.co'],
+    // Disable optimization for local public assets to prevent loading issues
+    unoptimized: true,
   },
 };
 
