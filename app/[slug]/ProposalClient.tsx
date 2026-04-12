@@ -379,15 +379,28 @@ export default function ProposalClient({ slug }: { slug: string }) {
               </div>
             </div>
 
-            <div className="relative mt-5 mb-2">
-              <input type="range" min={10} max={150} step={1}
+            {/*
+              * Wrapper: py-4 gives fingers extra vertical hit-target room.
+              * touch-action: none on the input prevents iOS Safari from
+              * treating a horizontal drag as a page scroll gesture.
+              */}
+            <div className="relative mt-5 mb-2 py-4">
+              <input
+                type="range"
+                min={10}
+                max={150}
+                step={1}
                 value={coveragePct}
                 onChange={e => setCoveragePct(Number(e.target.value))}
-                className="w-full h-2 rounded-full appearance-none cursor-pointer"
-                style={{ background:`linear-gradient(to right,${zone.color} 0%,${zone.color} ${((coveragePct-10)/140)*100}%,#1E4D30 ${((coveragePct-10)/140)*100}%,#1E4D30 100%)` }}
+                className="w-full rounded-full appearance-none cursor-pointer"
+                style={{
+                  touchAction: 'none',
+                  background: `linear-gradient(to right,${zone.color} 0%,${zone.color} ${((coveragePct-10)/140)*100}%,#1E4D30 ${((coveragePct-10)/140)*100}%,#1E4D30 100%)`,
+                }}
               />
-              <div className="absolute top-3 flex flex-col items-center pointer-events-none"
-                style={{ left:`${((p.defaultCov-10)/140)*100}%`, transform:'translateX(-50%)' }}>
+              {/* Contracted default marker — offset down by py-4 added above */}
+              <div className="absolute flex flex-col items-center pointer-events-none"
+                style={{ left:`${((p.defaultCov-10)/140)*100}%`, top:'100%', transform:'translateX(-50%)' }}>
                 <div className="w-px h-3 bg-green/70" />
                 <span className="text-[9px] text-green font-bold whitespace-nowrap mt-0.5">▲ Contracted ({p.defaultCov}%)</span>
               </div>
