@@ -122,17 +122,28 @@ function HR() { return <div className="border-t border-border" />; }
 
 function Logo() {
   return (
-    <div className="flex items-end gap-2">
-      <svg width="22" height="26" viewBox="0 0 28 32" fill="none" aria-hidden="true">
+    <div className="flex items-center gap-3">
+      {/* Real logo loaded from /public/apollo-logo.png */}
+      <img
+        src="/apollo-logo.png"
+        alt="Apollo Africa"
+        style={{ height: 48, width: "auto", objectFit: "contain" }}
+        onError={(e) => {
+          const t = e.currentTarget as HTMLImageElement;
+          t.style.display = "none";
+          const fb = document.getElementById("logo-svg-fallback");
+          if (fb) fb.style.display = "block";
+        }}
+      />
+      {/* SVG fallback shown only if PNG fails */}
+      <svg
+        id="logo-svg-fallback"
+        width="22" height="26" viewBox="0 0 28 32" fill="none"
+        aria-hidden="true" style={{ display: "none" }}
+      >
         <path d="M14 0L28 28H0L14 0Z" fill="#C9A84C" opacity="0.9"/>
         <path d="M14 6L24 28H14V6Z" fill="#10B981"/>
       </svg>
-      <div>
-        <p className="font-display text-xl font-black text-offwhite leading-none">
-          APOLLO <span className="text-green">AFRICA</span>
-        </p>
-        <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-gold">a Reunert company</p>
-      </div>
     </div>
   );
 }
