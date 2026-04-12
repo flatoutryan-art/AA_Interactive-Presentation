@@ -43,6 +43,10 @@ type Props = {
   onTermChange:     (t: Term) => void;
   savings:          { s5:number; s10:number; s15:number };
   tariffs:          { t5:number; t10:number; t15:number; eskom:number };
+  // New props
+  adjSavings:       number;       // spillage-aware savings for selected term
+  eskomEscPct:      number;       // active Eskom escalation assumption
+  onEskomEscChange: (v: number) => void;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -122,9 +126,19 @@ export default function Charts({
   monthlyChartData, dayChartData, traj, tariffBars,
   cpi, esEsc, spillMwh, onTermChange,
   savings, tariffs,
+  adjSavings, eskomEscPct, onEskomEscChange,
 }: Props) {
 
-  const adjSavings = (raw: number) => raw * (coveragePct / defaultCov);
+  // adjSavings is passed in pre-computed (spillage-aware) from ProposalClient
+  // Per-term savings scaled from adjSavings using the ratio of stored term savings
+  const baseForTerm = (t: Term) =>
+    t===5?savings.s5 : t===10?savings.s10 : t===15?savings.s15 : savings.s15*1.7;
+  const scaledSavings = (t: Term) => {
+    const baseCurrent = baseForTerm(term);
+    const baseOther   = baseForTerm(t);
+    // Preserve spillage ratio across all terms
+    return baseCurrent > 0 ? adjSavings * (baseOther / baseCurrent) : adjSavings;
+  };
 
   return (
     <>
@@ -278,11 +292,10 @@ export default function Charts({
           </Card>
         </div>
 
-        {/* Term picker */}
+        {/* Term picker — savings reflect spillage penalty from current coverage */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {([5,10,15,20] as Term[]).map(t => {
-            const raw = t===5?savings.s5 : t===10?savings.s10 : t===15?savings.s15 : savings.s15*1.7;
-            const s   = adjSavings(raw);
+            const s      = scaledSavings(t);
             const active = term === t;
             return (
               <button key={t} onClick={() => onTermChange(t)}
@@ -360,49 +373,123 @@ export default function Charts({
                   stroke="#EF4444" strokeWidth={2.5} dot={false} strokeDasharray="5 3" activeDot={{ r:5, fill:'#EF4444' }} />
               </LineChart>
             </ResponsiveContainer>
-            <p className="text-dim text-[11px] mt-2">
-              Apollo at CPI ({cpi}% p.a.) vs Eskom at {esEsc}% p.a. — the gap widens every year.
-            </p>
+            {/* Eskom escalation assumption toggle */}
+            <div className="mt-4 pt-4 border-t border-border">
+              <p className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2">
+                Eskom Escalation Assumption
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                {[4, 6, 8, 10].map(pct => (
+                  <button
+                    key={pct}
+                    onClick={() => onEskomEscChange(pct)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      eskomEscPct === pct
+                        ? 'bg-green text-charcoal'
+                        : 'bg-elevated border border-border text-muted hover:text-offwhite'
+                    }`}
+                  >
+                    {pct}% p.a.{pct === 6 ? ' (default)' : pct < 6 ? ' ↓ conservative' : pct === 8 ? ' ↑ likely' : ' ↑ high'}
+                  </button>
+                ))}
+              </div>
+              <p className="text-dim text-[11px] mt-2">
+                Apollo at CPI ({cpi}% p.a.) vs Eskom at {eskomEscPct}% p.a.
+                {eskomEscPct > 6 ? ' — higher assumption shows greater long-term savings.' :
+                 eskomEscPct < 6 ? ' — conservative assumption reduces savings forecast.' :
+                 ' — the gap widens every year.'}
+              </p>
+            </div>
           </Card>
         </div>
 
-        {/* TOU Tariff table */}
-        <Card title="Tariff Schedule [R/kWh] — 1 April 2025">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse" style={{fontSize:11}}>
-              <thead>
-                <tr className="border-b border-border">
-                  {['Period','5yr','10yr','15yr','20yr','Eskom'].map((h, i) => (
-                    <th key={h} className={`py-2 px-1 text-[11px] font-bold uppercase ${
-                      i===0?'text-left text-dim':i===5?'text-center text-danger':'text-center text-green'
-                    }`}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  { label:'Weighted Avg', vals:[tariffs.t5, tariffs.t10, tariffs.t15, tariffs.t15*0.97, tariffs.eskom], bold:true },
-                  { label:'HS — Peak',    vals:[5.20, 5.13, 4.88, 4.74, 5.40], bold:false },
-                  { label:'HS — Std',     vals:[1.28, 1.26, 1.17, 1.14, 1.35], bold:false },
-                  { label:'HS — Off-Pk', vals:[0.90, 0.90, 0.90, 0.88, 0.90], bold:false },
-                  { label:'LS — Peak',    vals:[2.16, 2.13, 2.03, 1.97, 2.24], bold:false },
-                  { label:'LS — Std',     vals:[1.20, 1.17, 1.09, 1.06, 1.26], bold:false },
-                  { label:'LS — Off-Pk', vals:[0.90, 0.90, 0.90, 0.88, 0.90], bold:false },
-                ].map(row => (
-                  <tr key={row.label} className={`border-b border-border/40 hover:bg-elevated/20 transition-colors ${row.bold?'bg-green/5':''}`}>
-                    <td className={`py-2.5 px-1 text-muted ${row.bold?'font-bold':''}`}>{row.label}</td>
-                    {row.vals.map((v, j) => (
-                      <td key={j} className={`text-center py-2.5 px-1 ${j===4?'text-danger':'text-offwhite'} ${row.bold?'font-bold':''}`}>
-                        {fmt(v)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-dim text-[11px] mt-3">Escalate at CPI annually. 20yr rates are indicative extrapolations.</p>
-        </Card>
+        {/* TOU Tariff table — dynamic: shows only the selected term + Eskom */}
+        {(() => {
+          // Per-term TOU data: [Peak_HS, Std_HS, OffPk_HS, Peak_LS, Std_LS, OffPk_LS, WeightedAvg]
+          const termData: Record<number, { label:string; apollo:number; eskom:number }[]> = {
+            5:  [
+              { label:'Weighted Average',        apollo: tariffs.t5,         eskom: tariffs.eskom },
+              { label:'High Season — Peak',       apollo: 5.20,               eskom: 5.40 },
+              { label:'High Season — Standard',   apollo: 1.28,               eskom: 1.35 },
+              { label:'High Season — Off-Peak',   apollo: 0.90,               eskom: 0.90 },
+              { label:'Low Season — Peak',        apollo: 2.16,               eskom: 2.24 },
+              { label:'Low Season — Standard',    apollo: 1.20,               eskom: 1.26 },
+              { label:'Low Season — Off-Peak',    apollo: 0.90,               eskom: 0.90 },
+            ],
+            10: [
+              { label:'Weighted Average',        apollo: tariffs.t10,        eskom: tariffs.eskom },
+              { label:'High Season — Peak',       apollo: 5.13,               eskom: 5.40 },
+              { label:'High Season — Standard',   apollo: 1.26,               eskom: 1.35 },
+              { label:'High Season — Off-Peak',   apollo: 0.90,               eskom: 0.90 },
+              { label:'Low Season — Peak',        apollo: 2.13,               eskom: 2.24 },
+              { label:'Low Season — Standard',    apollo: 1.17,               eskom: 1.26 },
+              { label:'Low Season — Off-Peak',    apollo: 0.90,               eskom: 0.90 },
+            ],
+            15: [
+              { label:'Weighted Average',        apollo: tariffs.t15,        eskom: tariffs.eskom },
+              { label:'High Season — Peak',       apollo: 4.88,               eskom: 5.40 },
+              { label:'High Season — Standard',   apollo: 1.17,               eskom: 1.35 },
+              { label:'High Season — Off-Peak',   apollo: 0.90,               eskom: 0.90 },
+              { label:'Low Season — Peak',        apollo: 2.03,               eskom: 2.24 },
+              { label:'Low Season — Standard',    apollo: 1.09,               eskom: 1.26 },
+              { label:'Low Season — Off-Peak',    apollo: 0.90,               eskom: 0.90 },
+            ],
+            20: [
+              { label:'Weighted Average',        apollo: tariffs.t15*0.97,   eskom: tariffs.eskom },
+              { label:'High Season — Peak',       apollo: 4.74,               eskom: 5.40 },
+              { label:'High Season — Standard',   apollo: 1.14,               eskom: 1.35 },
+              { label:'High Season — Off-Peak',   apollo: 0.88,               eskom: 0.90 },
+              { label:'Low Season — Peak',        apollo: 1.97,               eskom: 2.24 },
+              { label:'Low Season — Standard',    apollo: 1.06,               eskom: 1.26 },
+              { label:'Low Season — Off-Peak',    apollo: 0.88,               eskom: 0.90 },
+            ],
+          };
+          const rows = termData[term] ?? termData[5];
+          const termLabel = `${term}-Year Contract`;
+          return (
+            <Card title={`TOU Tariff Schedule [R/kWh] — 1 April 2026 · ${termLabel}`}>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse" style={{fontSize:12}}>
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-2.5 px-2 text-[11px] font-bold uppercase text-dim">Time of Use Period</th>
+                      <th className="text-center py-2.5 px-3 text-[11px] font-bold uppercase text-green">{termLabel}</th>
+                      <th className="text-center py-2.5 px-3 text-[11px] font-bold uppercase text-danger">Eskom WEPS</th>
+                      <th className="text-center py-2.5 px-3 text-[11px] font-bold uppercase text-muted">Saving</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, i) => {
+                      const saving = row.eskom - row.apollo;
+                      const isWA = i === 0;
+                      return (
+                        <tr key={row.label}
+                          className={`border-b border-border/40 hover:bg-elevated/20 transition-colors ${isWA ? 'bg-green/5' : ''}`}>
+                          <td className={`py-2.5 px-2 text-muted ${isWA ? 'font-bold text-offwhite' : ''}`}>
+                            {row.label}
+                          </td>
+                          <td className={`text-center py-2.5 px-3 text-green ${isWA ? 'font-bold text-lg' : ''}`}>
+                            {fmt(row.apollo)}
+                          </td>
+                          <td className={`text-center py-2.5 px-3 text-danger ${isWA ? 'font-bold text-lg' : ''}`}>
+                            {fmt(row.eskom)}
+                          </td>
+                          <td className={`text-center py-2.5 px-3 ${saving > 0 ? 'text-green' : saving < 0 ? 'text-danger' : 'text-muted'} ${isWA ? 'font-bold text-lg' : ''}`}>
+                            {saving > 0 ? '-' : saving < 0 ? '+' : ''}{fmt(Math.abs(saving))}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-dim text-[11px] mt-3">
+                Apollo tariffs escalate at CPI annually. Eskom WEPS rates based on 2025 approved tariff booklet.
+                {term === 20 ? ' 20-year rates are indicative extrapolations.' : ''}
+              </p>
+            </Card>
+          );
+        })()}
       </section>
     </>
   );
