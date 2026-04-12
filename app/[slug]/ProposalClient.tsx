@@ -179,7 +179,9 @@ export default function ProposalClient({ slug }: { slug: string }) {
   const [loading,     setLoading]     = useState(true);
   const [notFound,    setNotFound]    = useState(false);
   const [term,        setTerm]        = useState<Term>(5);
-  const [coveragePct, setCoveragePct] = useState<number | null>(null);
+  const [coveragePct,  setCoveragePct]  = useState<number | null>(null);
+  // Eskom escalation assumption — user-adjustable, default 6%
+  const [eskomEscPct,  setEskomEscPct]  = useState<number>(6);
 
   useEffect(() => {
     supabase
@@ -230,16 +232,35 @@ export default function ProposalClient({ slug }: { slug: string }) {
   // ── Coverage-derived ──────────────────────────────────────────────────────
   const fraction   = coveragePct / 100;
   const generated  = p.load > 0 ? p.load * fraction : p.mwh * fraction;
-  const effective  = Math.min(generated, p.load || generated);
+  const effective  = Math.min(generated, p.load || generated);  // capped at actual load
   const spillMwh   = Math.max(0, generated - (p.load || generated));
   const spillPct   = generated > 0 ? (spillMwh / generated) * 100 : 0;
   const ghgAnnual  = generated * 0.94;
-  const adjSavings = baseSavings * (coveragePct / p.defaultCov);
   const discount   = p.eskom > 0 ? ((p.eskom - baseTariff) / p.eskom) * 100 : 0;
   const zone       = getZone(coveragePct);
 
+  // ── Spillage-aware savings ─────────────────────────────────────────────────
+  // Correct formula: savings = (energy_credited × eskomRate) - (energy_generated × apolloRate)
+  //  - energy_credited = min(generated, load)   — you can only credit what you actually consume
+  //  - energy_generated = generated              — you pay Apollo for all of it
+  // At 70% (default, zero spillage): effective = generated, formula simplifies to (rate_diff × MWh)
+  // Above 70%: effective stays capped at load, but generated keeps rising → savings shrink
+  //
+  // adjSavings: scales the DB-stored base savings using the same formula ratio
+  const defaultGenMwh = p.load > 0 ? p.load * (p.defaultCov / 100) : p.mwh;
+  const defaultSavingPerMwh = defaultGenMwh > 0
+    ? baseSavings / (defaultGenMwh * term / 1000)   // rough R/MWh at default coverage
+    : 0;
+  // Annual saving at current coverage (year-1, before escalation)
+  const annualSavingY1 = ((effective * p.eskom) - (generated * baseTariff)) * 1000 / 1_000_000;
+  // Scale baseSavings proportionally: ratio of current Y1 saving vs default Y1 saving
+  const defaultAnnualY1 = ((defaultGenMwh * p.eskom) - (defaultGenMwh * baseTariff)) * 1000 / 1_000_000;
+  const savingsRatio    = defaultAnnualY1 > 0 ? annualSavingY1 / defaultAnnualY1 : 1;
+  const adjSavings      = Math.max(0, baseSavings * savingsRatio);
+
   // ── Chart data ────────────────────────────────────────────────────────────
-  const traj = buildTrajectory(baseTariff, p.eskom, generated, p.load, p.cpi, p.esEsc, term);
+  // Use user-selected Eskom escalation (overrides DB value)
+  const traj = buildTrajectory(baseTariff, p.eskom, generated, p.load, p.cpi, eskomEscPct, term);
 
   const covScale      = p.defaultCov > 0 ? coveragePct / p.defaultCov : 1;
   const monthlySupply = MONTH_KEYS.map(k => safe((proposal.monthly_supply as Record<string,number>)[k]) * covScale);
@@ -508,11 +529,14 @@ export default function ProposalClient({ slug }: { slug: string }) {
           traj={traj}
           tariffBars={tariffBars}
           cpi={p.cpi}
-          esEsc={p.esEsc}
+          esEsc={eskomEscPct}
           spillMwh={spillMwh}
           onTermChange={setTerm}
           savings={{ s5: p.s5, s10: p.s10, s15: p.s15 }}
           tariffs={{ t5: p.t5, t10: p.t10, t15: p.t15, eskom: p.eskom }}
+          adjSavings={adjSavings}
+          eskomEscPct={eskomEscPct}
+          onEskomEscChange={setEskomEscPct}
         />
 
         <HR />
