@@ -51,6 +51,10 @@ const fmt = (n: number, dp = 2): string =>
     minimumFractionDigits: dp, maximumFractionDigits: dp,
   });
 
+// Dot-decimal formatter for chart axes and tariff tooltips (en-ZA uses commas)
+const fmtDot = (n: number, dp = 2): string =>
+  (isNaN(n) ? 0 : n).toFixed(dp);
+
 const fmtMill = (n: number): string => `R${fmt(isNaN(n) ? 0 : n, 0)}m`;
 
 // ─── Custom tooltip ───────────────────────────────────────────────────────────
@@ -67,11 +71,16 @@ function Tip({ active, payload, label }: {
       boxShadow:'0 8px 32px rgba(0,0,0,0.5)',
     }}>
       <p style={{ color:'#86EFAC', fontWeight:600, marginBottom:4 }}>{label}</p>
-      {payload.map(p => (
-        <p key={p.name} style={{ color:p.color, lineHeight:1.7 }}>
-          {p.name}: <strong>{fmt(p.value)}{p.unit ?? ''}</strong>
-        </p>
-      ))}
+      {payload.map(p => {
+        // Tariff values (R/kWh) are small decimals — use dot notation to avoid R1,84 style
+        const isTariff = p.name.includes('R/kWh') || p.name.includes('Apollo (') || p.name.includes('Eskom (');
+        const display = isTariff ? `R${fmtDot(p.value, 2)}` : `${fmt(p.value)}${p.unit ?? ''}`;
+        return (
+          <p key={p.name} style={{ color:p.color, lineHeight:1.7 }}>
+            {p.name}: <strong>{display}</strong>
+          </p>
+        );
+      })}
     </div>
   );
 }
@@ -312,7 +321,7 @@ export default function Charts({
               <BarChart data={tariffBars} barGap={8} margin={{ top:4, right:4, left:0, bottom:4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" vertical={false} />
                 <XAxis dataKey="term" {...axisProps} />
-                <YAxis {...axisProps} domain={[1.1, 1.65]} tickFormatter={v => `R${v}`} width={52} />
+                <YAxis {...axisProps} domain={[1.1, 1.65]} tickFormatter={(v: number) => `R${fmtDot(v, 2)}`} width={68} />
                 <Tooltip content={<Tip />} />
                 <Legend formatter={legendFmt} />
                 <Bar dataKey="apollo" name="Apollo Tariff" fill="#10B981" radius={[4,4,0,0]} />
@@ -322,18 +331,33 @@ export default function Charts({
           </Card>
 
           <Card title="Tariff Trajectory — divergence over time">
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={traj} margin={{ top:4, right:8, left:0, bottom:20 }}>
+            <ResponsiveContainer width="100%" height={260}>
+              <LineChart data={traj} margin={{ top:4, right:16, left:0, bottom:32 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" />
                 <XAxis dataKey="year" {...axisProps}
-                  label={{ value:'Contract Year', position:'insideBottom', offset:-12, fill:'#4ADE80', fontSize:11 }} />
-                <YAxis {...axisProps} tickFormatter={v => `R${fmt(v,2)}`} width={72} />
+                  label={{ value:'Contract Year', position:'insideBottom', offset:-18, fill:'#4ADE80', fontSize:11 }} />
+                <YAxis
+                  {...axisProps}
+                  // Domain: floor slightly below start tariff, ceiling above projected eskom peak
+                  domain={[
+                    (dataMin: number) => parseFloat((dataMin * 0.97).toFixed(2)),
+                    (dataMax: number) => parseFloat((dataMax * 1.05).toFixed(2)),
+                  ]}
+                  tickFormatter={(v: number) => `R${fmtDot(v, 2)}`}
+                  width={68}
+                />
                 <Tooltip content={<Tip />} />
-                <Legend formatter={legendFmt} />
+                <Legend
+                  formatter={legendFmt}
+                  wrapperStyle={{ paddingTop: 8, paddingBottom: 0 }}
+                  verticalAlign="bottom"
+                  align="left"
+                  iconType="line"
+                />
                 <Line type="monotone" dataKey="apollo" name="Apollo (R/kWh)"
-                  stroke="#10B981" strokeWidth={2.5} dot={false} />
+                  stroke="#10B981" strokeWidth={2.5} dot={false} activeDot={{ r:5, fill:'#10B981' }} />
                 <Line type="monotone" dataKey="eskom" name="Eskom (R/kWh)"
-                  stroke="#EF4444" strokeWidth={2.5} dot={false} strokeDasharray="5 3" />
+                  stroke="#EF4444" strokeWidth={2.5} dot={false} strokeDasharray="5 3" activeDot={{ r:5, fill:'#EF4444' }} />
               </LineChart>
             </ResponsiveContainer>
             <p className="text-dim text-[11px] mt-2">
