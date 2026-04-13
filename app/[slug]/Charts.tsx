@@ -371,36 +371,41 @@ export default function Charts({
             const yMin = parseFloat((Math.min(selectedBar.apollo, selectedBar.eskom) * 0.93).toFixed(2));
             const yMax = parseFloat((Math.max(selectedBar.apollo, selectedBar.eskom) * 1.07).toFixed(2));
             return (
-              <Card title={`Weighted Average Tariff [R/kWh] — ${term}-Year Term`}>
+              {/* flex flex-col so the chart stretches to fill the full card height */}
+              <div className="bg-forest border border-border rounded-2xl p-5 flex flex-col">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-4">
+                  {`Weighted Average Tariff [R/kWh] — ${term}-Year Term`}
+                </p>
                 {/* Saving callout */}
-                <div className="flex items-center gap-3 mb-4 -mt-1 p-3 rounded-xl bg-green/10 border border-green/20">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">Apollo saving vs Eskom</p>
-                    <p className="text-green text-2xl font-black leading-none">
-                      R{fmtDot(saving, 2)} /kWh
-                      <span className="text-sm text-dim font-semibold ml-2">({savingPct}% cheaper)</span>
-                    </p>
-                  </div>
+                <div className="mb-4 p-3 rounded-xl bg-green/10 border border-green/20">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">Apollo saving vs Eskom</p>
+                  <p className="text-green text-2xl font-black leading-none mt-1">
+                    R{fmtDot(saving, 2)} /kWh
+                    <span className="text-sm text-dim font-semibold ml-2">({savingPct}% cheaper)</span>
+                  </p>
                 </div>
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={barData} barGap={16} margin={{ top:4, right:4, left:0, bottom:4 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" vertical={false} />
-                    <XAxis dataKey="label" {...axisProps} />
-                    <YAxis
-                      {...axisProps}
-                      domain={[yMin, yMax]}
-                      tickFormatter={(v: number) => `R${fmtDot(v, 2)}`}
-                      width={68}
-                    />
-                    <Tooltip content={<Tip />} />
-                    <Bar dataKey="value" name="R/kWh" radius={[6,6,0,0]} isAnimationActive={true}>
-                      {barData.map((entry, index) => (
-                        <Cell key={index} fill={entry.fill} opacity={index === 1 ? 0.75 : 1} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
+                {/* flex-1 makes the chart grow to fill whatever height remains */}
+                <div className="flex-1 min-h-[180px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={barData} barGap={16} margin={{ top:4, right:4, left:0, bottom:4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" vertical={false} />
+                      <XAxis dataKey="label" {...axisProps} />
+                      <YAxis
+                        {...axisProps}
+                        domain={[yMin, yMax]}
+                        tickFormatter={(v: number) => `R${fmtDot(v, 2)}`}
+                        width={68}
+                      />
+                      <Tooltip content={<Tip />} />
+                      <Bar dataKey="value" name="R/kWh" radius={[6,6,0,0]} isAnimationActive={true}>
+                        {barData.map((entry, index) => (
+                          <Cell key={index} fill={entry.fill} opacity={index === 1 ? 0.75 : 1} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             );
           })()}
 
@@ -439,18 +444,18 @@ export default function Charts({
               <p className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2">
                 Eskom Escalation Assumption
               </p>
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="grid grid-cols-4 gap-2">
                 {[4, 6, 8, 10].map(pct => (
                   <button
                     key={pct}
                     onClick={() => onEskomEscChange(pct)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    className={`py-2 rounded-lg text-xs font-bold transition-all text-center ${
                       eskomEscPct === pct
                         ? 'bg-green text-charcoal'
                         : 'bg-elevated border border-border text-muted hover:text-offwhite'
                     }`}
                   >
-                    {pct}% p.a.{pct === 6 ? ' (default)' : pct < 6 ? ' ↓ conservative' : pct === 8 ? ' ↑ likely' : ' ↑ high'}
+                    {pct}% p.a.
                   </button>
                 ))}
               </div>
