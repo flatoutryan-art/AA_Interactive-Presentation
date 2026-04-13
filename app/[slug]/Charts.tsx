@@ -18,11 +18,12 @@
  */
 
 import {
-  AreaChart, Area,
+  ComposedChart, AreaChart, Area,
   BarChart, Bar,
   LineChart, Line,
   XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
+  Cell,
 } from 'recharts';
 import type { TRow } from './ProposalClient';
 
@@ -147,16 +148,20 @@ export default function Charts({
         <SHead eye="Your Contracted Supply" title="Monthly Power Forecast" />
 
         <Card title="Apollo Wheeled Supply vs Electrical Load [MWh / month]">
-          <ResponsiveContainer width="100%" height={280}>
-            <AreaChart data={monthlyChartData} margin={{ top:8, right:8, left:0, bottom:0 }}>
+          <p className="text-muted text-xs mb-3 -mt-2">
+            Green fill = Apollo supply. Blue line = actual customer load.
+            {spillMwh > 0 && <span className="text-gold"> Gold fill = spillage (supply exceeds load).</span>}
+          </p>
+          <ResponsiveContainer width="100%" height={290}>
+            <ComposedChart data={monthlyChartData} margin={{ top:8, right:8, left:0, bottom:0 }}>
               <defs>
                 <linearGradient id="supplyGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#10B981" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#10B981" stopOpacity={0.02} />
+                  <stop offset="5%"  stopColor="#10B981" stopOpacity={0.45} />
+                  <stop offset="95%" stopColor="#10B981" stopOpacity={0.03} />
                 </linearGradient>
                 <linearGradient id="spillGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#C9A84C" stopOpacity={0.45} />
-                  <stop offset="95%" stopColor="#C9A84C" stopOpacity={0.02} />
+                  <stop offset="5%"  stopColor="#C9A84C" stopOpacity={0.55} />
+                  <stop offset="95%" stopColor="#C9A84C" stopOpacity={0.05} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" />
@@ -164,16 +169,41 @@ export default function Charts({
               <YAxis {...axisProps} unit=" MWh" width={72} />
               <Tooltip content={<Tip />} />
               <Legend formatter={legendFmt} wrapperStyle={{ paddingTop:14 }} />
+              {/* Apollo supply — green filled area */}
+              <Area
+                type="monotone"
+                dataKey="supply"
+                name="Apollo Wheeled Supply (MWh)"
+                stroke="#10B981"
+                strokeWidth={2.5}
+                fill="url(#supplyGrad)"
+                dot={false}
+                activeDot={{ r:5, fill:'#10B981' }}
+              />
+              {/* Spillage — gold fill stacked on top when supply > load */}
               {spillMwh > 0 && (
-                <Area type="monotone" dataKey="spill" name="Spillage (excess)"
-                  stroke="#C9A84C" strokeWidth={1.5} fill="url(#spillGrad)"
-                  dot={false} strokeDasharray="4 2" />
+                <Area
+                  type="monotone"
+                  dataKey="spill"
+                  name="Spillage — supply exceeds load (MWh)"
+                  stroke="#C9A84C"
+                  strokeWidth={1.5}
+                  fill="url(#spillGrad)"
+                  dot={false}
+                  strokeDasharray="4 3"
+                />
               )}
-              <Area type="monotone" dataKey="supply" name="Apollo Wheeled Supply"
-                stroke="#10B981" strokeWidth={2} fill="url(#supplyGrad)" dot={false} />
-              <Line type="monotone" dataKey="load" name="Electrical Load"
-                stroke="#F0FFF4" strokeWidth={2} dot={false} strokeDasharray="5 3" />
-            </AreaChart>
+              {/* Customer load — distinct solid teal/cyan line, clearly different from supply */}
+              <Line
+                type="monotone"
+                dataKey="load"
+                name="Customer Electrical Load (MWh)"
+                stroke="#38BDF8"
+                strokeWidth={3}
+                dot={false}
+                activeDot={{ r:5, fill:'#38BDF8' }}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         </Card>
 
@@ -329,19 +359,50 @@ export default function Charts({
         <SHead eye="Your TOU Tariffs" title="Apollo vs Eskom Comparison" />
 
         <div className="grid md:grid-cols-2 gap-5 mb-5">
-          <Card title="Weighted Average Tariff [R/kWh] — All Terms">
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={tariffBars} barGap={8} margin={{ top:4, right:4, left:0, bottom:4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" vertical={false} />
-                <XAxis dataKey="term" {...axisProps} />
-                <YAxis {...axisProps} domain={[1.1, 1.65]} tickFormatter={(v: number) => `R${fmtDot(v, 2)}`} width={68} />
-                <Tooltip content={<Tip />} />
-                <Legend formatter={legendFmt} />
-                <Bar dataKey="apollo" name="Apollo Tariff" fill="#10B981" radius={[4,4,0,0]} />
-                <Bar dataKey="eskom"  name="Eskom WEPS"   fill="#EF4444" radius={[4,4,0,0]} opacity={0.75} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
+          {/* Tariff bar — shows only the selected term vs Eskom */}
+          {(() => {
+            const selectedBar = tariffBars.find(b => b.term === `${term}yr`) ?? tariffBars[0];
+            const barData = [
+              { label: `Apollo ${term}yr`, value: selectedBar.apollo, fill: '#10B981' },
+              { label: 'Eskom WEPS',        value: selectedBar.eskom,  fill: '#EF4444' },
+            ];
+            const saving = selectedBar.eskom - selectedBar.apollo;
+            const savingPct = ((saving / selectedBar.eskom) * 100).toFixed(1);
+            const yMin = parseFloat((Math.min(selectedBar.apollo, selectedBar.eskom) * 0.93).toFixed(2));
+            const yMax = parseFloat((Math.max(selectedBar.apollo, selectedBar.eskom) * 1.07).toFixed(2));
+            return (
+              <Card title={`Weighted Average Tariff [R/kWh] — ${term}-Year Term`}>
+                {/* Saving callout */}
+                <div className="flex items-center gap-3 mb-4 -mt-1 p-3 rounded-xl bg-green/10 border border-green/20">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">Apollo saving vs Eskom</p>
+                    <p className="text-green text-2xl font-black leading-none">
+                      R{fmtDot(saving, 2)} /kWh
+                      <span className="text-sm text-dim font-semibold ml-2">({savingPct}% cheaper)</span>
+                    </p>
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={barData} barGap={16} margin={{ top:4, right:4, left:0, bottom:4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" vertical={false} />
+                    <XAxis dataKey="label" {...axisProps} />
+                    <YAxis
+                      {...axisProps}
+                      domain={[yMin, yMax]}
+                      tickFormatter={(v: number) => `R${fmtDot(v, 2)}`}
+                      width={68}
+                    />
+                    <Tooltip content={<Tip />} />
+                    <Bar dataKey="value" name="R/kWh" radius={[6,6,0,0]} isAnimationActive={true}>
+                      {barData.map((entry, index) => (
+                        <Cell key={index} fill={entry.fill} opacity={index === 1 ? 0.75 : 1} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </Card>
+            );
+          })()}
 
           <Card title="Tariff Trajectory — divergence over time">
             <ResponsiveContainer width="100%" height={260}>
