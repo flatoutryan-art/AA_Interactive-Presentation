@@ -1,16 +1,8 @@
 'use client';
 
 /**
- * app/[slug]/Charts.tsx  v4
- *
- * Design refresh:
- *  - Chart cards: white background, dark text, green accents
- *  - Section headings and page background remain dark (unchanged)
- *  - Tooltips: keep dark green (brand contrast on white charts)
- *  - All axis labels, legends, grid lines updated for white bg
- *  - Fixed label overlaps: removed insideBottom XAxis labels (used
- *    dedicated bottom margin instead), increased chart heights where
- *    labels were clipped, moved legend below charts with safe padding
+ * app/[slug]/Charts.tsx
+ * Loaded via dynamic import (ssr:false) from ProposalClient.
  */
 
 import {
@@ -22,52 +14,39 @@ import {
   Cell,
 } from 'recharts';
 import type { TRow } from './ProposalClient';
+import type { TouBreakdown } from '../../lib/supabaseClient';
 
-type Term = 3 | 5 | 7 | 10 | 15 | 20;
+type Term = 5 | 10 | 15;
 
 type Props = {
   term:             Term;
+  availableTerms:   Term[];
   coveragePct:      number;
   defaultCov:       number;
   monthlyChartData: Array<{ month: string; supply: number; load: number; spill: number }>;
-  dayChartData:     Array<{ hour: string; apollo: number; load: number; spill: number }>;
+  dayChartData:     Array<{ hour: string;  apollo: number; load: number; spill: number }>;
   traj:             TRow[];
   tariffBars:       Array<{ term: string; apollo: number; eskom: number }>;
   cpi:              number;
   esEsc:            number;
+  eskomEscPct:      number;
   spillMwh:         number;
-  onTermChange:     (t: Term) => void;
-  savings:          { s3:number; s5:number; s7:number; s10:number; s15:number; s20:number };
+  onTermChange:     (t: number) => void;
+  onEskomEscChange: (v: number) => void;
+  savings:          { s5: number; s10: number; s15: number };
   tariffs:          { t5: number; t10: number; t15: number; eskom: number };
   adjSavings:       number;
-  eskomEscPct:      number;
-  onEskomEscChange: (v: number) => void;
-  activeTerms:      number[];
-  touPeak:          number;
-  touStandard:      number;
-  touOffpeak:       number;
+  activeTou:        TouBreakdown | null;
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n: number, dp = 2): string =>
-  (isNaN(n) ? 0 : n).toLocaleString('en-ZA', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+  (isNaN(n) ? 0 : n).toLocaleString('en-ZA', {
+    minimumFractionDigits: dp, maximumFractionDigits: dp,
+  });
 
 const fmtDot = (n: number, dp = 2): string => (isNaN(n) ? 0 : n).toFixed(dp);
-
 const fmtMill = (n: number): string => `R${fmt(isNaN(n) ? 0 : n, 0)}m`;
 
-// ─── Axis props for WHITE background charts ───────────────────────────────────
-// Text is dark charcoal on white cards
-const axisLight = {
-  tick:     { fill: '#374151', fontSize: 11 },
-  axisLine: { stroke: '#E5E7EB' } as const,
-  tickLine: false as const,
-};
-
-// Grid for white background
-const gridLight = { strokeDasharray: '3 3', stroke: '#E5E7EB' };
-
-// ─── Tooltip — stays dark green for brand contrast ────────────────────────────
 function Tip({ active, payload, label }: {
   active?: boolean;
   payload?: Array<{ name: string; value: number; color: string }>;
@@ -75,14 +54,17 @@ function Tip({ active, payload, label }: {
 }) {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background:'#0F2318', border:'1px solid #10B981', borderRadius:10, padding:'10px 14px', fontSize:12, boxShadow:'0 8px 32px rgba(0,0,0,0.25)' }}>
-      <p style={{ color:'#86EFAC', fontWeight:700, marginBottom:5, borderBottom:'1px solid #1E4D30', paddingBottom:4 }}>{label}</p>
+    <div style={{
+      background: '#0F2318', border: '1px solid #1E4D30',
+      borderRadius: 12, padding: '10px 14px', fontSize: 12,
+      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+    }}>
+      <p style={{ color: '#86EFAC', fontWeight: 600, marginBottom: 4 }}>{label}</p>
       {payload.map(p => {
-        const isTariff = p.name.includes('R/kWh') || p.name.includes('Apollo') || p.name.includes('Eskom');
-        const display  = isTariff ? `R${fmtDot(p.value, 2)}` : fmt(p.value);
+        const isTariff = p.name.includes('R/kWh') || p.name.includes('Apollo (') || p.name.includes('Eskom (');
         return (
-          <p key={p.name} style={{ color: p.color === '#374151' ? '#86EFAC' : p.color, lineHeight: 1.7 }}>
-            {p.name}: <strong>{display}</strong>
+          <p key={p.name} style={{ color: p.color, lineHeight: 1.7 }}>
+            {p.name}: <strong>{isTariff ? `R${fmtDot(p.value, 2)}` : fmt(p.value)}</strong>
           </p>
         );
       })}
@@ -90,34 +72,17 @@ function Tip({ active, payload, label }: {
   );
 }
 
-// Legend formatter for white bg cards
-const legendLight = (v: string) => (
-  <span style={{ color: '#374151', fontSize: 11 }}>{v}</span>
-);
+const lgFmt = (v: string) => <span style={{ color: '#86EFAC', fontSize: 12 }}>{v}</span>;
+const ax = {
+  tick: { fill: '#86EFAC', fontSize: 11 },
+  axisLine: false as const,
+  tickLine: false as const,
+};
 
-// ─── White chart card ─────────────────────────────────────────────────────────
-function ChartCard({ title, sub, children }: {
-  title: string; sub?: string; children: React.ReactNode;
-}) {
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-      <p className="text-[11px] font-bold uppercase tracking-widest text-green mb-1">{title}</p>
-      {sub && <p className="text-gray-400 text-xs mb-4">{sub}</p>}
-      {!sub && <div className="mb-4" />}
-      {children}
-    </div>
-  );
-}
-
-// Dark section card (term picker, escalation panel etc — stays dark)
-function DarkCard({ title, children, gold=false }: {
-  title: string; children: React.ReactNode; gold?: boolean;
-}) {
-  return (
-    <div className={`rounded-2xl border p-5 ${gold ? 'bg-gold/5 border-gold/40' : 'bg-forest border-border'}`}>
-      <p className={`text-[11px] font-semibold uppercase tracking-widest mb-4 ${gold ? 'text-gold' : 'text-muted'}`}>
-        {title}
-      </p>
+    <div className="bg-forest border border-border rounded-2xl p-5">
+      <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-4">{title}</p>
       {children}
     </div>
   );
@@ -132,300 +97,284 @@ function SHead({ eye, title }: { eye: string; title: string }) {
   );
 }
 
-function HR() { return <div className="border-t border-border my-2" />; }
+function HR() { return <div className="border-t border-border" />; }
 
-// ── White table wrapper ───────────────────────────────────────────────────────
-function WhiteTable({ title, sub, children }: {
-  title: string; sub?: string; children: React.ReactNode;
-}) {
-  return (
-    <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-      <div className="px-5 pt-5 pb-3 border-b border-gray-100">
-        <p className="text-[11px] font-bold uppercase tracking-widest text-green">{title}</p>
-        {sub && <p className="text-gray-400 text-xs mt-0.5">{sub}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
+const TOU_LABELS: Array<{ key: keyof TouBreakdown; label: string }> = [
+  { key: 'weighted_avg', label: 'Weighted Average'        },
+  { key: 'hs_peak',      label: 'High Season — Peak'      },
+  { key: 'hs_std',       label: 'High Season — Standard'  },
+  { key: 'hs_offpeak',   label: 'High Season — Off-Peak'  },
+  { key: 'ls_peak',      label: 'Low Season — Peak'       },
+  { key: 'ls_std',       label: 'Low Season — Standard'   },
+  { key: 'ls_offpeak',   label: 'Low Season — Off-Peak'   },
+];
 
-// ══════════════════════════════════════════════════════════════════════════════
+const ESKOM_REF: Record<keyof TouBreakdown, number> = {
+  hs_peak:     5.40,
+  hs_std:      1.35,
+  hs_offpeak:  0.90,
+  ls_peak:     2.24,
+  ls_std:      1.26,
+  ls_offpeak:  0.90,
+  weighted_avg: 0, // filled dynamically from tariffs.eskom
+};
+
 export default function Charts({
-  term, coveragePct, defaultCov,
-  monthlyChartData, dayChartData, traj, tariffBars,
-  cpi, esEsc, spillMwh, onTermChange,
+  term, availableTerms,
+  monthlyChartData, dayChartData,
+  traj, tariffBars,
+  cpi, eskomEscPct,
+  spillMwh, onTermChange, onEskomEscChange,
   savings, tariffs,
-  adjSavings, eskomEscPct, onEskomEscChange,
-  activeTerms,
-  touPeak, touStandard, touOffpeak,
+  adjSavings, activeTou,
 }: Props) {
 
-  const validTerms: Term[] = (
-    (activeTerms?.length ? activeTerms : [5, 10, 15]) as Term[]
-  ).filter(t => [3, 5, 7, 10, 15, 20].includes(t));
-
-  const hasTerm = (t: Term) => validTerms.includes(t);
-
-  // Each term card shows the ACTUAL stored savings from DB — no scaling.
-  // This fixes the "wrong values when greyed out" bug: previously unselected
-  // cards were computing scaled approximations instead of reading actual data.
-  const savingsForTerm = (t: Term): number => {
-    if (t === 3)  return savings.s3;
+  const baseForTerm = (t: Term): number => {
     if (t === 5)  return savings.s5;
-    if (t === 7)  return savings.s7;
     if (t === 10) return savings.s10;
-    if (t === 15) return savings.s15;
-    return savings.s20;
+    return savings.s15;
   };
 
-  // Term cards show the raw DB savings directly — no scaling.
-  // adjSavings (coverage-scaled) only applies to the currently selected term.
   const scaledSavings = (t: Term): number => {
-    const raw = savingsForTerm(t);
-    if (t === term) return adjSavings;  // selected term uses coverage-adjusted value
-    return raw;                          // other terms show their direct DB value
+    const baseCurrent = baseForTerm(term);
+    const baseOther   = baseForTerm(t);
+    return baseCurrent > 0 ? adjSavings * (baseOther / baseCurrent) : adjSavings;
   };
 
-  const apolloWa =
-    term===3  ? (tariffBars.find(b=>b.term==='3yr')?.apollo  ?? tariffs.t5*1.04) :
-    term===5  ? tariffs.t5  :
-    term===7  ? (tariffBars.find(b=>b.term==='7yr')?.apollo  ?? tariffs.t5*0.98) :
-    term===10 ? tariffs.t10 :
-    term===15 ? tariffs.t15 :
-                tariffs.t15 * 0.97;
+  const eskomRef = { ...ESKOM_REF, weighted_avg: tariffs.eskom };
 
-  const buildTouRows = (wa: number, eskomWa: number) => [
-    { label:'Weighted Average',        apollo:wa,          eskom:eskomWa,           pct:null,              isWA:true,  season:'' },
-    { label:'High Season — Peak',      apollo:wa*1.38,     eskom:eskomWa*1.38,      pct:touPeak*0.5,       isWA:false, season:'high' },
-    { label:'High Season — Standard',  apollo:wa*0.97,     eskom:eskomWa*0.97,      pct:touStandard*0.5,   isWA:false, season:'high' },
-    { label:'High Season — Off-Peak',  apollo:wa*0.68,     eskom:eskomWa*0.62,      pct:touOffpeak*0.5,    isWA:false, season:'high' },
-    { label:'Low Season — Peak',       apollo:wa*0.58,     eskom:eskomWa*0.58,      pct:touPeak*0.5,       isWA:false, season:'low' },
-    { label:'Low Season — Standard',   apollo:wa*0.85,     eskom:eskomWa*0.85,      pct:touStandard*0.5,   isWA:false, season:'low' },
-    { label:'Low Season — Off-Peak',   apollo:wa*0.68,     eskom:eskomWa*0.62,      pct:touOffpeak*0.5,    isWA:false, season:'low' },
-  ];
+  const termCols =
+    availableTerms.length === 1 ? 'grid-cols-1 max-w-xs' :
+    availableTerms.length === 2 ? 'grid-cols-2' : 'grid-cols-3';
 
   return (
     <>
-      {/* ════════════════════════════════════════════════════════════════════
-          MONTHLY POWER FORECAST
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* ── MONTHLY POWER FORECAST ───────────────────────────────────────── */}
       <section className="py-14">
         <SHead eye="Your Contracted Supply" title="Monthly Power Forecast" />
 
-        {/* Main area chart — white card */}
-        <ChartCard
-          title="Apollo Wheeled Supply vs Electrical Load [MWh / month]"
-          sub={spillMwh > 0
-            ? "Green = Apollo supply consumed · Blue line = customer load · Gold stacked = spillage (supply exceeds load)"
-            : "Green fill = Apollo supply · Blue line = actual customer load"}
-        >
-          <ResponsiveContainer width="100%" height={300}>
-            <ComposedChart data={monthlyChartData} margin={{ top:10, right:16, left:0, bottom:10 }}>
+        <Card title="Apollo Wheeled Supply vs Electrical Load [MWh / month]">
+          <p className="text-muted text-xs mb-3 -mt-2">
+            Green fill = Apollo supply · Blue line = customer load
+            {spillMwh > 0 && <span className="text-gold"> · Gold = spillage (supply exceeds load)</span>}
+          </p>
+          <ResponsiveContainer width="100%" height={290}>
+            <ComposedChart data={monthlyChartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
               <defs>
-                <linearGradient id="supplyGradW" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#10B981" stopOpacity={0.35} />
-                  <stop offset="95%" stopColor="#10B981" stopOpacity={0.04} />
+                <linearGradient id="supplyGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#10B981" stopOpacity={0.45} />
+                  <stop offset="95%" stopColor="#10B981" stopOpacity={0.03} />
                 </linearGradient>
-                <linearGradient id="spillGradW" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#C9A84C" stopOpacity={0.60} />
-                  <stop offset="95%" stopColor="#C9A84C" stopOpacity={0.08} />
+                <linearGradient id="spillGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#C9A84C" stopOpacity={0.55} />
+                  <stop offset="95%" stopColor="#C9A84C" stopOpacity={0.05} />
                 </linearGradient>
               </defs>
-              <CartesianGrid {...gridLight} />
-              <XAxis dataKey="month" {...axisLight} />
-              <YAxis {...axisLight} unit=" MWh" width={80} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" />
+              <XAxis dataKey="month" {...ax} />
+              <YAxis {...ax} unit=" MWh" width={72} />
               <Tooltip content={<Tip />} />
-              <Legend formatter={legendLight} wrapperStyle={{ paddingTop:12, fontSize:11 }} />
-              <Area type="monotone" dataKey="supply" stackId="apollo"
-                name="Apollo Wheeled Supply (MWh)" stroke="#10B981" strokeWidth={2.5}
-                fill="url(#supplyGradW)" dot={false} activeDot={{ r:5, fill:'#10B981' }} />
+              <Legend formatter={lgFmt} wrapperStyle={{ paddingTop: 14 }} />
+              <Area type="monotone" dataKey="supply" name="Apollo Wheeled Supply (MWh)"
+                stroke="#10B981" strokeWidth={2.5} fill="url(#supplyGrad)"
+                dot={false} activeDot={{ r: 5, fill: '#10B981' }} />
               {spillMwh > 0 && (
-                <Area type="monotone" dataKey="spill" stackId="apollo"
-                  name="Spillage — supply exceeds load (MWh)" stroke="#C9A84C" strokeWidth={2}
-                  fill="url(#spillGradW)" dot={false} />
+                <Area type="monotone" dataKey="spill" name="Spillage — supply exceeds load (MWh)"
+                  stroke="#C9A84C" strokeWidth={1.5} fill="url(#spillGrad)"
+                  dot={false} strokeDasharray="4 3" />
               )}
-              <Line type="monotone" dataKey="load"
-                name="Customer Electrical Load (MWh)" stroke="#3B82F6" strokeWidth={2.5}
-                dot={false} activeDot={{ r:5, fill:'#3B82F6' }} />
+              <Line type="monotone" dataKey="load" name="Customer Electrical Load (MWh)"
+                stroke="#38BDF8" strokeWidth={3} dot={false}
+                activeDot={{ r: 5, fill: '#38BDF8' }} />
             </ComposedChart>
           </ResponsiveContainer>
-        </ChartCard>
+        </Card>
 
-        {/* Monthly data table — white */}
-        <div className="mt-5">
-          <WhiteTable title="Monthly Energy Summary [MWh]">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse" style={{ fontSize:11 }}>
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="text-left py-2.5 px-4 text-gray-500 font-semibold uppercase tracking-wider whitespace-nowrap">Period</th>
+        {/* Monthly table */}
+        <div className="mt-5 overflow-x-auto rounded-2xl border border-border">
+          <table className="w-full border-collapse" style={{ fontSize: 11 }}>
+            <thead>
+              <tr className="border-b border-border bg-forest">
+                <th className="text-left py-2.5 px-3 text-green font-bold uppercase tracking-widest whitespace-nowrap">Period</th>
+                {monthlyChartData.map(d => (
+                  <th key={d.month} className="text-center py-2.5 px-1 text-muted font-semibold">{d.month}</th>
+                ))}
+                <th className="text-center py-2.5 px-3 text-green font-bold">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {([
+                { label: 'Apollo Supply', key: 'supply' as const, cls: 'text-green'    },
+                { label: 'Elec. Load',    key: 'load'   as const, cls: 'text-offwhite' },
+              ]).map(row => {
+                const total = monthlyChartData.reduce((s, d) => s + d[row.key], 0);
+                return (
+                  <tr key={row.key} className="border-b border-border/50">
+                    <td className={`py-2 px-3 font-semibold whitespace-nowrap ${row.cls}`}>{row.label}</td>
                     {monthlyChartData.map(d => (
-                      <th key={d.month} className="text-center py-2.5 px-2 text-gray-500 font-semibold">{d.month}</th>
+                      <td key={d.month} className="text-center py-2 px-1 text-offwhite">{fmt(d[row.key], 0)}</td>
                     ))}
-                    <th className="text-center py-2.5 px-4 text-green font-bold">Total</th>
+                    <td className={`text-center py-2 px-3 font-black ${row.cls}`}>{fmt(total, 0)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {([
-                    { label:'Apollo Supply', key:'supply' as const, textCls:'text-green font-semibold', totalCls:'text-green font-black' },
-                    { label:'Elec. Load',    key:'load'   as const, textCls:'text-gray-700',            totalCls:'text-gray-900 font-black' },
-                  ]).map(row => {
-                    const total = monthlyChartData.reduce((s,d) => s+d[row.key], 0);
-                    return (
-                      <tr key={row.key} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                        <td className={`py-2.5 px-4 font-semibold whitespace-nowrap ${row.textCls}`}>{row.label}</td>
-                        {monthlyChartData.map(d => (
-                          <td key={d.month} className={`text-center py-2.5 px-2 ${row.textCls}`}>{fmt(d[row.key], 0)}</td>
-                        ))}
-                        <td className={`text-center py-2.5 px-4 ${row.totalCls}`}>{fmt(total, 0)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </WhiteTable>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
 
-
+        {/* Day-in-the-life */}
+        <div className="mt-5">
+          <Card title="Day-in-the-Life Match — 24-Hour Cycle [MW average]">
+            <p className="text-muted text-xs mb-4 -mt-2">
+              Representative daily profile. Coverage slider adjusts Apollo supply curve.
+            </p>
+            <ResponsiveContainer width="100%" height={240}>
+              <ComposedChart data={dayChartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="dayApolloGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#10B981" stopOpacity={0.45} />
+                    <stop offset="95%" stopColor="#10B981" stopOpacity={0.02} />
+                  </linearGradient>
+                  <linearGradient id="daySpillGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#C9A84C" stopOpacity={0.5} />
+                    <stop offset="95%" stopColor="#C9A84C" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" />
+                <XAxis dataKey="hour" {...ax} interval={3} />
+                <YAxis {...ax} unit=" MW" width={48} />
+                <Tooltip content={<Tip />} />
+                <Legend formatter={lgFmt} wrapperStyle={{ paddingTop: 12 }} />
+                <Area type="monotone" dataKey="apollo" name="Apollo Supply (MW)"
+                  stroke="#10B981" strokeWidth={2.5} fill="url(#dayApolloGrad)"
+                  dot={false} activeDot={{ r: 5, fill: '#10B981' }} />
+                {spillMwh > 0 && (
+                  <Area type="monotone" dataKey="spill" name="Spillage"
+                    stroke="#C9A84C" strokeWidth={1.5} fill="url(#daySpillGrad)"
+                    dot={false} strokeDasharray="4 2" />
+                )}
+                <Line type="monotone" dataKey="load" name="Eskom Load (MW)"
+                  stroke="#38BDF8" strokeWidth={2.5} dot={false}
+                  activeDot={{ r: 5, fill: '#38BDF8' }} />
+              </ComposedChart>
+            </ResponsiveContainer>
+            <p className="text-border text-[11px] mt-3">
+              Indicative shape: wind/solar blend. Gold area appears when supply exceeds consumption.
+            </p>
+          </Card>
+        </div>
       </section>
 
       <HR />
 
-      {/* ════════════════════════════════════════════════════════════════════
-          SAVINGS FORECAST
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* ── SAVINGS FORECAST ─────────────────────────────────────────────── */}
       <section className="py-14">
         <SHead eye="Your Savings Forecast" title={`${term}-Year Savings Projection`} />
 
         <div className="grid md:grid-cols-2 gap-5 mb-5">
-          {/* Annual bar chart — white */}
-          <ChartCard title="Annual Savings [Mill ZAR / year]">
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={traj} margin={{ top:10, right:16, left:0, bottom:8 }}>
-                <CartesianGrid {...gridLight} vertical={false} />
-                <XAxis dataKey="year" {...axisLight}
-                  label={{ value:'Contract Year', position:'insideBottom', offset:-4, fill:'#6B7280', fontSize:10 }} />
-                <YAxis {...axisLight} unit="m" width={44} />
+          <Card title="Annual Savings [Mill ZAR / year]">
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={traj} margin={{ top: 4, right: 4, left: 0, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" vertical={false} />
+                <XAxis dataKey="year" {...ax}
+                  label={{ value: 'Contract Year', position: 'insideBottom', offset: -12, fill: '#4ADE80', fontSize: 11 }} />
+                <YAxis {...ax} unit="m" width={40} />
                 <Tooltip content={<Tip />} />
-                <Bar dataKey="annual" name="Annual Saving (R mill)" fill="#10B981"
-                  radius={[4,4,0,0]} maxBarSize={40} />
+                <Bar dataKey="annual" name="Annual Saving (R mill)" fill="#10B981" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
-          </ChartCard>
+          </Card>
 
-          {/* Cumulative area chart — white */}
-          <ChartCard title="Cumulative Savings [Mill ZAR]">
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={traj} margin={{ top:10, right:16, left:0, bottom:8 }}>
+          <Card title="Cumulative Savings [Mill ZAR]">
+            <ResponsiveContainer width="100%" height={240}>
+              <AreaChart data={traj} margin={{ top: 4, right: 4, left: 0, bottom: 20 }}>
                 <defs>
-                  <linearGradient id="cumulW" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#10B981" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#10B981" stopOpacity={0.02} />
+                  <linearGradient id="cumulGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#34D399" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#34D399" stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid {...gridLight} />
-                <XAxis dataKey="year" {...axisLight}
-                  label={{ value:'Contract Year', position:'insideBottom', offset:-4, fill:'#6B7280', fontSize:10 }} />
-                <YAxis {...axisLight} unit="m" width={44} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" />
+                <XAxis dataKey="year" {...ax}
+                  label={{ value: 'Contract Year', position: 'insideBottom', offset: -12, fill: '#4ADE80', fontSize: 11 }} />
+                <YAxis {...ax} unit="m" width={40} />
                 <Tooltip content={<Tip />} />
                 <Area type="monotone" dataKey="cumul" name="Cumulative Saving (R mill)"
-                  stroke="#10B981" strokeWidth={2.5} fill="url(#cumulW)"
-                  dot={{ fill:'#10B981', r:3, strokeWidth:0 }} />
+                  stroke="#34D399" strokeWidth={2.5} fill="url(#cumulGrad)"
+                  dot={{ fill: '#34D399', r: 3 }} />
               </AreaChart>
             </ResponsiveContainer>
-          </ChartCard>
+          </Card>
         </div>
 
-        {/* Term picker — stays dark (it's a CTA / selector) */}
-        {validTerms.length > 1 && (
-          <div className={`grid gap-4 ${
-            validTerms.length === 2 ? 'grid-cols-2' :
-            validTerms.length === 3 ? 'grid-cols-3' :
-            'grid-cols-2 md:grid-cols-3'
-          }`}>
-            {validTerms.map(t => {
-              const s = scaledSavings(t);
-              const active = term === t;
-              return (
-                <button key={t} onClick={() => onTermChange(t)}
-                  className={`rounded-2xl border p-5 text-center cursor-pointer transition-all w-full ${
-                    active
-                      ? 'bg-green text-charcoal border-green shadow-lg shadow-green/20'
-                      : 'bg-white border-gray-200 hover:border-green/50 hover:shadow-md text-gray-900'
-                  }`}>
-                  <p className={`text-[11px] font-semibold uppercase tracking-widest mb-1 ${active?'text-charcoal/70':'text-gray-400'}`}>Contract Term</p>
-                  <p className={`text-3xl font-black ${active?'text-charcoal':'text-gray-900'}`}>{t} Year</p>
-                  <p className={`text-2xl font-black mt-1 ${active?'text-charcoal':'text-green'}`}>{fmtMill(s)}</p>
-                  <p className={`text-xs mt-1 ${active?'text-charcoal/70':'text-gray-400'}`}>Cumulative Savings</p>
-                  {active && <span className="inline-block mt-2 bg-charcoal/20 text-charcoal text-[11px] font-bold px-3 py-0.5 rounded-full">Selected ✓</span>}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {validTerms.length === 1 && (
-          <div className="bg-white border border-gray-200 rounded-xl px-6 py-4 inline-flex items-center gap-4 shadow-sm">
-            <span className="text-green text-2xl font-black">{validTerms[0]}-Year Contract</span>
-            <span className="text-gray-300">·</span>
-            <span className="text-green font-bold text-xl">{fmtMill(adjSavings)}</span>
-            <span className="text-gray-400 text-sm">cumulative savings</span>
-          </div>
-        )}
+        {/* Term picker — only available terms */}
+        <div className={`grid gap-4 ${termCols}`}>
+          {availableTerms.map(t => {
+            const s      = scaledSavings(t);
+            const active = term === t;
+            return (
+              <button key={t} onClick={() => onTermChange(t)}
+                className={`rounded-2xl border p-4 text-center cursor-pointer transition-all w-full ${
+                  active ? 'bg-green/10 border-green' : 'bg-forest border-border hover:border-green/40'
+                }`}>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Term</p>
+                <p className="text-offwhite text-2xl font-black">{t} Year</p>
+                <p className="text-green text-2xl font-black mt-1">{fmtMill(s)}</p>
+                <p className="text-dim text-xs mt-1">Cumulative Savings</p>
+                {active && (
+                  <span className="inline-block mt-1 bg-green text-charcoal text-[11px] font-bold px-2 py-0.5 rounded-full">
+                    Selected
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
       </section>
 
       <HR />
 
-      {/* ════════════════════════════════════════════════════════════════════
-          TARIFF COMPARISON
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* ── TARIFF COMPARISON ────────────────────────────────────────────── */}
       <section className="py-14">
         <SHead eye="Your TOU Tariffs" title="Apollo vs Eskom Comparison" />
 
-        {/* Row 1: WA bar + escalation panel */}
         <div className="grid md:grid-cols-2 gap-5 mb-5">
 
-          {/* WA tariff bar — white */}
+          {/* Tariff bar — selected term vs Eskom */}
           {(() => {
-            const selectedBar =
-              tariffBars.find(b => b.term === `${term}yr`) ??
-              tariffBars.find(b => validTerms.includes(parseInt(b.term) as Term)) ??
-              tariffBars[0];
+            const selectedBar = tariffBars.find(b => b.term === `${term}yr`) ?? tariffBars[0];
             if (!selectedBar) return null;
-
-            const barData = [
-              { label:`Apollo ${term}yr`, value:selectedBar.apollo, fill:'#10B981' },
-              { label:'Eskom WEPS',       value:selectedBar.eskom,  fill:'#EF4444' },
+            const barData   = [
+              { label: `Apollo ${term}yr`, value: selectedBar.apollo, fill: '#10B981' },
+              { label: 'Eskom WEPS',        value: selectedBar.eskom,  fill: '#EF4444' },
             ];
             const saving    = selectedBar.eskom - selectedBar.apollo;
             const savingPct = ((saving / selectedBar.eskom) * 100).toFixed(1);
             const yMin      = parseFloat((Math.min(selectedBar.apollo, selectedBar.eskom) * 0.93).toFixed(2));
             const yMax      = parseFloat((Math.max(selectedBar.apollo, selectedBar.eskom) * 1.07).toFixed(2));
-
             return (
-              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm flex flex-col">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-green mb-3">
-                  Weighted Average Tariff [R/kWh] — {term}-Year Term
+              <div className="bg-forest border border-border rounded-2xl p-5 flex flex-col">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-4">
+                  {`Weighted Average Tariff [R/kWh] — ${term}-Year Term`}
                 </p>
-                <div className="mb-4 p-3 rounded-xl bg-green/8 border border-green/20">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Apollo saving vs Eskom</p>
+                <div className="mb-4 p-3 rounded-xl bg-green/10 border border-green/20">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">Apollo saving vs Eskom</p>
                   <p className="text-green text-2xl font-black leading-none mt-1">
-                    R{fmtDot(saving, 2)}/kWh
-                    <span className="text-sm text-gray-400 font-semibold ml-2">({savingPct}% cheaper)</span>
+                    R{fmtDot(saving, 2)} /kWh
+                    <span className="text-sm text-dim font-semibold ml-2">({savingPct}% cheaper)</span>
                   </p>
                 </div>
-                <div className="flex-1 min-h-[200px]">
+                <div className="flex-1 min-h-[180px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={barData} barGap={20} margin={{ top:8, right:8, left:0, bottom:8 }}>
-                      <CartesianGrid {...gridLight} vertical={false} />
-                      <XAxis dataKey="label" {...axisLight} />
-                      <YAxis {...axisLight} domain={[yMin, yMax]}
-                        tickFormatter={(v:number) => `R${fmtDot(v,2)}`} width={72} />
+                    <BarChart data={barData} barGap={16} margin={{ top: 4, right: 4, left: 0, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" vertical={false} />
+                      <XAxis dataKey="label" {...ax} />
+                      <YAxis {...ax} domain={[yMin, yMax]}
+                        tickFormatter={(v: number) => `R${fmtDot(v, 2)}`} width={68} />
                       <Tooltip content={<Tip />} />
-                      <Bar dataKey="value" name="R/kWh" radius={[6,6,0,0]} maxBarSize={60}>
+                      <Bar dataKey="value" name="R/kWh" radius={[6, 6, 0, 0]}>
                         {barData.map((entry, index) => (
-                          <Cell key={index} fill={entry.fill} opacity={index===1?0.80:1} />
+                          <Cell key={index} fill={entry.fill} opacity={index === 1 ? 0.75 : 1} />
                         ))}
                       </Bar>
                     </BarChart>
@@ -435,153 +384,131 @@ export default function Charts({
             );
           })()}
 
-          {/* Escalation assumption panel — with indicative savings calculator */}
-          <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm flex flex-col gap-4">
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-widest text-green mb-2">
+          {/* Tariff trajectory + Eskom escalation toggle */}
+          <Card title="Tariff Trajectory — divergence over time">
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={traj} margin={{ top: 4, right: 16, left: 0, bottom: 32 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1E4D30" />
+                <XAxis dataKey="year" {...ax}
+                  label={{ value: 'Contract Year', position: 'insideBottom', offset: -18, fill: '#4ADE80', fontSize: 11 }} />
+                <YAxis {...ax}
+                  domain={[
+                    (dataMin: number) => parseFloat((dataMin * 0.97).toFixed(2)),
+                    (dataMax: number) => parseFloat((dataMax * 1.05).toFixed(2)),
+                  ]}
+                  tickFormatter={(v: number) => `R${fmtDot(v, 2)}`}
+                  width={68}
+                />
+                <Tooltip content={<Tip />} />
+                <Legend formatter={lgFmt} wrapperStyle={{ paddingTop: 8 }}
+                  verticalAlign="bottom" align="left" iconType="line" />
+                <Line type="monotone" dataKey="apollo" name="Apollo (R/kWh)"
+                  stroke="#10B981" strokeWidth={2.5} dot={false}
+                  activeDot={{ r: 5, fill: '#10B981' }} />
+                <Line type="monotone" dataKey="eskom" name="Eskom (R/kWh)"
+                  stroke="#EF4444" strokeWidth={2.5} dot={false}
+                  strokeDasharray="5 3" activeDot={{ r: 5, fill: '#EF4444' }} />
+              </LineChart>
+            </ResponsiveContainer>
+
+            <div className="mt-4 pt-4 border-t border-border">
+              <p className="text-muted text-[11px] font-semibold uppercase tracking-widest mb-2">
                 Eskom Escalation Assumption
-              </p>
-              <p className="text-gray-600 text-sm leading-relaxed mb-4">
-                Apollo escalates at CPI (<strong className="text-green">{cpi}%</strong> p.a.).
-                Select an Eskom scenario to model indicative savings.
               </p>
               <div className="grid grid-cols-4 gap-2">
                 {[4, 6, 8, 10].map(pct => (
                   <button key={pct} onClick={() => onEskomEscChange(pct)}
-                    className={`py-3 rounded-xl text-sm font-bold transition-all text-center ${
+                    className={`py-2 rounded-lg text-xs font-bold transition-all text-center ${
                       eskomEscPct === pct
-                        ? 'bg-green text-white shadow-md shadow-green/30'
-                        : 'bg-gray-50 border border-gray-200 text-gray-600 hover:border-green/50 hover:text-green'
+                        ? 'bg-green text-charcoal'
+                        : 'bg-elevated border border-border text-muted hover:text-offwhite'
                     }`}>
                     {pct}% p.a.
                   </button>
                 ))}
               </div>
+              <p className="text-dim text-[11px] mt-2">
+                Apollo at CPI ({cpi}% p.a.) vs Eskom at {eskomEscPct}% p.a.
+                {eskomEscPct > 6 ? ' — higher assumption shows greater long-term savings.' :
+                 eskomEscPct < 6 ? ' — conservative assumption reduces savings forecast.'  :
+                 ' — the gap widens every year.'}
+              </p>
             </div>
-            {/* Indicative savings block
-                BASE = 6% Eskom (matches the stored contract savings in the DB).
-                8% and 10% selections show UPLIFT vs base.
-                4% shows REDUCTION vs base.
-                6% shows the contracted savings figure as-is (no delta).
-            */}
-            {(() => {
-              // adjSavings = stored contract savings at 6% base escalation
-              // indicativeSavings = recomputed cumulative from traj at selected rate
-              const indicativeSavings = parseFloat(
-                traj.reduce((s, r) => s + Math.max(0, r.annual), 0).toFixed(1)
-              );
-              // diff vs the stored base (adjSavings = contract value at 6%)
-              const diff    = parseFloat((indicativeSavings - adjSavings).toFixed(1));
-              const diffPct = adjSavings > 0 ? Math.round((diff / adjSavings) * 100) : 0;
-              const isBase  = eskomEscPct === 6;
-              const isHigh  = eskomEscPct > 6;   // 8% or 10% — show GREEN uplift
-              const isLow   = eskomEscPct < 6;   // 4% — show AMBER reduction
-
-              return (
-                <div className={`rounded-xl p-4 border ${
-                  isHigh ? 'bg-green/5 border-green/30'
-                  : isLow ? 'bg-amber-50 border-amber-200'
-                  : 'bg-gray-50 border-gray-200'
-                }`}>
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <div>
-                      <p className={`text-[10px] font-bold uppercase tracking-widest mb-0.5 ${
-                        isHigh ? 'text-green' : isLow ? 'text-amber-600' : 'text-gray-500'
-                      }`}>
-                        {isBase
-                          ? 'Contract Savings — Base Scenario'
-                          : `Possible Savings @ ${eskomEscPct}% Eskom`}
-                      </p>
-                      <p className={`text-2xl font-black leading-none ${
-                        isHigh ? 'text-green' : isLow ? 'text-amber-700' : 'text-gray-700'
-                      }`}>
-                        R{indicativeSavings.toFixed(1)}m
-                      </p>
-                      <p className="text-gray-400 text-[10px] mt-0.5">
-                        cumulative over {traj.length}-year term
-                      </p>
-                    </div>
-
-                    {/* Delta badge — only shown when NOT at base */}
-                    {!isBase && Math.abs(diff) >= 0.1 && (
-                      <div className={`text-right flex-shrink-0 px-3 py-2 rounded-xl border ${
-                        isHigh
-                          ? 'bg-green/10 border-green/30 text-green'
-                          : 'bg-amber-100 border-amber-300 text-amber-700'
-                      }`}>
-                        <p className="text-lg font-black leading-none">
-                          {isHigh ? '+' : ''}{diff.toFixed(1)}m
-                        </p>
-                        <p className="text-[10px] font-bold">
-                          {isHigh ? '+' : ''}{diffPct}% vs contract
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  <p className="text-gray-500 text-[10px] leading-relaxed mb-2">
-                    {isBase
-                      ? `This matches your contracted savings forecast. Apollo escalates at CPI ${cpi}% p.a. vs Eskom at 6% p.a.`
-                      : isHigh
-                      ? `At ${eskomEscPct}% p.a. Eskom escalation the tariff gap widens faster — Apollo becomes progressively cheaper every year vs the grid.`
-                      : `At ${eskomEscPct}% p.a. the gap narrows — Apollo remains cheaper, but the savings advantage grows more slowly than the base scenario.`}
-                  </p>
-
-                  <div className="flex items-center gap-1.5 pt-2 border-t border-gray-200">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                      <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                    </svg>
-                    <p className="text-amber-600 text-[9px] font-bold uppercase tracking-wider">
-                      {isBase
-                        ? 'Based on contracted escalation assumptions. Actual results may vary.'
-                        : 'Indicative only — illustrative purposes. Actual savings depend on contracted volumes and prevailing tariffs.'}
-                    </p>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
+          </Card>
         </div>
 
-        {/* Row 2: Tariff Trajectory — FULL WIDTH white card */}
-        <div className="mb-5">
-          <ChartCard
-            title={`Tariff Trajectory — Apollo vs Eskom over ${term} years`}
-            sub={`Apollo at CPI ${cpi}% p.a. · Eskom modelled at ${eskomEscPct}% p.a. · The gap between lines = cumulative savings`}
-          >
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={traj} margin={{ top:10, right:24, left:0, bottom:16 }}>
-                <CartesianGrid {...gridLight} />
-                <XAxis dataKey="year" {...axisLight} />
-                <YAxis
-                  {...axisLight}
-                  domain={[
-                    (dataMin: number) => parseFloat((dataMin * 0.96).toFixed(2)),
-                    (dataMax: number) => parseFloat((dataMax * 1.06).toFixed(2)),
-                  ]}
-                  tickFormatter={(v: number) => `R${fmtDot(v, 2)}`}
-                  width={76}
-                />
-                <Tooltip content={<Tip />} />
-                <Legend
-                  formatter={legendLight}
-                  wrapperStyle={{ paddingTop:12, fontSize:11 }}
-                  verticalAlign="bottom"
-                  align="left"
-                  iconType="line"
-                />
-                <Line type="monotone" dataKey="apollo" name="Apollo (R/kWh)"
-                  stroke="#10B981" strokeWidth={3} dot={false}
-                  activeDot={{ r:5, fill:'#10B981', stroke:'white', strokeWidth:2 }} />
-                <Line type="monotone" dataKey="eskom" name="Eskom (R/kWh)"
-                  stroke="#EF4444" strokeWidth={3} dot={false} strokeDasharray="6 3"
-                  activeDot={{ r:5, fill:'#EF4444', stroke:'white', strokeWidth:2 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        </div>
+        {/* TOU Tariff table — real data from DB */}
+        <div className="mt-2">
+          <SHead eye="TOU Tariff Schedule [R/kWh]" title={`Apollo vs Eskom — 1 April 2026`} />
 
+          {activeTou ? (
+            <div className="bg-forest border border-border rounded-2xl p-5">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-4">
+                {term}-Year Contract · Time of Use Tariffs
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse" style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-2.5 px-2 text-[11px] font-bold uppercase text-dim">
+                        Time of Use Period
+                      </th>
+                      <th className="text-center py-2.5 px-3 text-[11px] font-bold uppercase text-green">
+                        Apollo {term}yr
+                      </th>
+                      <th className="text-center py-2.5 px-3 text-[11px] font-bold uppercase text-danger">
+                        Eskom WEPS
+                      </th>
+                      <th className="text-center py-2.5 px-3 text-[11px] font-bold uppercase text-muted">
+                        Saving
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {TOU_LABELS.map(row => {
+                      const apollo   = activeTou[row.key] ?? 0;
+                      const eskomVal = eskomRef[row.key] ?? 0;
+                      const saving   = eskomVal - apollo;
+                      const isWA     = row.key === 'weighted_avg';
+                      return (
+                        <tr key={row.key}
+                          className={`border-b border-border/40 hover:bg-elevated/20 transition-colors ${isWA ? 'bg-green/5' : ''}`}>
+                          <td className={`py-2.5 px-2 text-muted ${isWA ? 'font-bold text-offwhite' : ''}`}>
+                            {row.label}
+                          </td>
+                          <td className={`text-center py-2.5 px-3 text-green ${isWA ? 'font-bold text-lg' : ''}`}>
+                            {apollo > 0 ? fmt(apollo) : '—'}
+                          </td>
+                          <td className={`text-center py-2.5 px-3 text-danger ${isWA ? 'font-bold text-lg' : ''}`}>
+                            {eskomVal > 0 ? fmt(eskomVal) : '—'}
+                          </td>
+                          <td className={`text-center py-2.5 px-3 ${
+                            saving > 0 ? 'text-green' : saving < 0 ? 'text-danger' : 'text-muted'
+                          } ${isWA ? 'font-bold text-lg' : ''}`}>
+                            {apollo > 0 && eskomVal > 0
+                              ? `${saving >= 0 ? '-' : '+'}${fmt(Math.abs(saving))}`
+                              : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-dim text-[11px] mt-3">
+                Apollo tariffs escalate at CPI annually. Eskom WEPS based on 2025/26 approved tariff booklet.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-forest border border-border rounded-2xl p-8 text-center">
+              <p className="text-muted text-sm font-semibold mb-2">TOU tariff data not yet uploaded</p>
+              <p className="text-border text-xs">
+                Re-upload the offerbook Excel file in the admin panel to populate exact TOU tariff
+                values from the Deal IO tab (columns D/E/F, rows 18–25).
+              </p>
+            </div>
+          )}
+        </div>
       </section>
     </>
   );
