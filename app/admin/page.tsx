@@ -106,7 +106,7 @@ function ExcelUploader({ onParsed }: { onParsed: (r: ParseResult) => void }) {
     const reader = new FileReader();
     reader.onload = e => {
       try {
-        const wb = XLSX.read(new Uint8Array(e.target?.result as ArrayBuffer), { type: 'uint8' });
+        const wb = XLSX.read(new Uint8Array(e.target?.result as ArrayBuffer), { type: 'array' });
         setSheetNames(wb.SheetNames);
 
         // Find Deal IO sheet (TOU tariffs live here, columns D/E/F rows 18-25)
