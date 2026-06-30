@@ -183,7 +183,6 @@ function ExcelUploader({ onParsed }: { onParsed: (r: ParseResult) => void }) {
           const a = String(ss[`A${r}`]?.v ?? '').toLowerCase();
           const b = String(ss[`B${r}`]?.v ?? '').toLowerCase();
           const label = a || b;
-          const valCol = a ? 'C' : 'C';
           if (label.includes('contracted') && (label.includes('supply') || label.includes('mwh'))) {
             contractMwh = numCell(ss, `C${r}`) || numCell(ss, `D${r}`);
           }
@@ -649,7 +648,10 @@ export default function AdminPage() {
                       <p className="text-[11px] text-muted mb-1">{r.label}</p>
                       <input type="number" step="0.01"
                         value={tou[r.key] || ''}
-                        onChange={e => setTou((prev: TouData) => ({...prev,[r.key]:parseFloat(e.target.value)||0}))}
+                        onChange={e => {
+                          const next = parseFloat(e.target.value) || 0;
+                          setTou(prev => ({ ...prev, [r.key]: next }));
+                        }}
                         placeholder="0.00"
                         className="w-full bg-elevated border border-border rounded-md px-2 py-1.5
                                    text-xs text-offwhite outline-none focus:border-green transition-colors" />
